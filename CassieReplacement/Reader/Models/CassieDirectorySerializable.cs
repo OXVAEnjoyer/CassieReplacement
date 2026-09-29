@@ -1,8 +1,5 @@
 namespace CassieReplacement.Reader.Models
 {
-    using System;
-
-    [Serializable]
     public class CassieDirectorySerializable
     {
         public string Path { get; set; } = "{labapi_configs}/CASSIE Replacement";

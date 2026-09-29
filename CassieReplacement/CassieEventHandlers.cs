@@ -1,156 +1,135 @@
 namespace CassieReplacement
 {
     using System;
-    using System.Linq;
+    using System.Globalization;
     using CassieReplacement.Config;
     using CassieReplacement.Reader;
-    using PlayerStatsSystem;
-    using PlayerRoles;
     using CassieReplacement.Reader.Enums;
-#if EXILED
-    using Exiled.API.Features;
-    using Exiled.Events.EventArgs.Map;
-#endif
+    using PlayerRoles;
+    using PlayerStatsSystem;
 
-    public class CassieEventHandlers
+    public static class CassieEventHandlers
     {
-        private static CassieOverrideConfigs Config => Plugin.Singleton.Config.CassieOverrideConfig;
+        private const string DefaultUnitLetter = "a";
 
         public static void HandleAnnouncingWaveEntrance(Faction faction, bool isMiniWave, string unitLetter = "", int unitNumber = 0)
         {
-            CassieAnnouncement newAnnouncement = new CassieAnnouncement();
-            char unitLetterFirst = 'a';
-
-            if (!string.IsNullOrWhiteSpace(unitLetter))
+            CassieOverrideConfigs config = Plugin.Singleton?.Config?.CassieOverrideConfig;
+            if (config == null)
             {
-                unitLetterFirst = unitLetter[0];
+                return;
             }
 
-            switch (faction)
+            CassieAnnouncement template = faction switch
             {
-                case Faction.FoundationStaff:
-                    newAnnouncement = isMiniWave ? Config.NtfMiniAnnouncement : Config.NtfWaveAnnouncement;
-                    break;
-                case Faction.FoundationEnemy:
-                    newAnnouncement = isMiniWave ? Config.ChaosMiniAnnouncement : Config.ChaosWaveAnnouncement;
-                    break;
-            }
+                Faction.FoundationStaff => isMiniWave ? config.NtfMiniAnnouncement : config.NtfWaveAnnouncement,
+                Faction.FoundationEnemy => isMiniWave ? config.ChaosMiniAnnouncement : config.ChaosWaveAnnouncement,
+                _ => null,
+            };
 
-            newAnnouncement = newAnnouncement
-                .GenericReplacement()
-                .Replace("{letter}", new CassieAnnouncement($"nato_{unitLetterFirst}", unitLetter))
-                .Replace("{number}", new CassieAnnouncement($"{unitNumber}", unitNumber < 10 ? $"0{unitNumber}" : $"{unitNumber}"));
-            newAnnouncement.Announce();
+            template?.GenericReplacement()
+                .Replace("{letter}", CreateUnitLetter(unitLetter))
+                .Replace("{number}", CreateUnitNumber(unitNumber))
+                .Announce();
         }
 
         public static void HandleAnnouncingTermination(DamageHandlerBase damageHandler, RoleTypeId victimRole)
         {
-            CassieAnnouncement newAnnouncement = Config.ScpTerminationAnnouncement.GenericReplacement();
-            CassieDamageType damageType = CassieDamageType.Unknown;
+            CassieOverrideConfigs config = Plugin.Singleton?.Config?.CassieOverrideConfig;
+            if (config == null)
+            {
+                return;
+            }
 
-            RoleTypeId attackerRole = RoleTypeId.None;
-            string attackerUnit = string.Empty;
+            CassieDamageType damageType = ResolveDamageType(damageHandler, out RoleTypeId attackerRole, out string attackerUnit);
 
             CassieAnnouncement letter = new CassieAnnouncement();
             CassieAnnouncement number = new CassieAnnouncement();
-
-            if (damageHandler is not AttackerDamageHandler aDamageHandler)
+            if (CassieUnit.TryParse(attackerUnit, out string unitLetter, out int unitNumber))
             {
-                switch (damageHandler)
-                {
-                    case WarheadDamageHandler:
-                        damageType = CassieDamageType.Warhead;
-                        break;
-                    case UniversalDamageHandler universalDamageHandler:
-                        if (universalDamageHandler.TranslationId == DeathTranslations.Decontamination.Id)
-                        {
-                            damageType = CassieDamageType.Decontamination;
-                        }
-
-                        if (universalDamageHandler.TranslationId == DeathTranslations.Tesla.Id)
-                        {
-                            damageType = CassieDamageType.Tesla;
-                        }
-
-                        break;
-                }
-            }
-            else
-            {
-                attackerRole = aDamageHandler.Attacker.Role;
-                attackerUnit = aDamageHandler.Attacker.UnitName;
-                damageType = CassieDamageType.Player;
+                letter = CreateUnitLetter(unitLetter);
+                number = CreateUnitNumber(unitNumber);
             }
 
-            if (!string.IsNullOrWhiteSpace(attackerUnit) && attackerUnit.Contains('-'))
-            {
-                string[] split = attackerUnit.Split('-');
-                string natoLetter = $"nato_{split[0][0]}";
-                int natoNumber = int.Parse(split[1]);
-                letter = new CassieAnnouncement($"nato_{split[0][0]}", split[0]);
-                number = new CassieAnnouncement($"{natoNumber}", natoNumber < 10 ? $"0{natoNumber}" : $"{natoNumber}");
-            }
+            Team attackerTeam = attackerRole.GetTeam();
+            CassieAnnouncement team = config.TeamTerminationCallsignLookupTable.TryGetValue(attackerTeam, out CassieAnnouncement callSign)
+                ? callSign
+                : new CassieAnnouncement();
+            CassieAnnouncement scpKiller = attackerTeam == Team.SCPs ? ResolveScp(config, attackerRole) : new CassieAnnouncement();
 
-            newAnnouncement = newAnnouncement
-                .GenericReplacement()
-                .Replace("{scp}", Config.ScpLookupTable[victimRole])
-                .Replace("{deathcause}", Config.DamageTypeTerminationAnnouncementLookupTable[damageType])
-                .Replace("{team}", Config.TeamTerminationCallsignLookupTable.TryGetValue(attackerRole.GetTeam(), out CassieAnnouncement _callSign) ? _callSign : new CassieAnnouncement())
-                .Replace("{scpkiller}", Config.ScpLookupTable.TryGetValue(attackerRole, out _) ? Config.ScpLookupTable[attackerRole] : new CassieAnnouncement())
+            config.ScpTerminationAnnouncement.GenericReplacement()
+                .Replace("{scp}", ResolveScp(config, victimRole))
+                .Replace("{deathcause}", FindDeathCause(config, damageType))
+                .Replace("{team}", team)
+                .Replace("{scpkiller}", scpKiller)
                 .Replace("{letter}", letter)
-                .Replace("{number}", number);
-            newAnnouncement.Announce();
+                .Replace("{number}", number)
+                .Announce();
         }
 
-#if EXILED
-        private void OnAnnouncingNtfEntrance(AnnouncingNtfEntranceEventArgs e)
+        private static CassieDamageType ResolveDamageType(DamageHandlerBase handler, out RoleTypeId attackerRole, out string attackerUnit)
         {
-            if (!Config.ShouldOverrideAnnouncements || !e.IsAllowed)
+            attackerRole = RoleTypeId.None;
+            attackerUnit = string.Empty;
+
+            switch (handler)
             {
-                return;
+                case AttackerDamageHandler attacker:
+                    attackerRole = attacker.Attacker.Role;
+                    attackerUnit = attacker.Attacker.UnitName;
+                    return CassieDamageType.Player;
+                case WarheadDamageHandler:
+                    return CassieDamageType.Warhead;
+                case UniversalDamageHandler universal when universal.TranslationId == DeathTranslations.Decontamination.Id:
+                    return CassieDamageType.Decontamination;
+                case UniversalDamageHandler universal when universal.TranslationId == DeathTranslations.Tesla.Id:
+                    return CassieDamageType.Tesla;
+                default:
+                    return CassieDamageType.Unknown;
+            }
+        }
+
+        private static CassieAnnouncement FindDeathCause(CassieOverrideConfigs config, CassieDamageType damageType)
+        {
+            if (config.DamageTypeTerminationAnnouncementLookupTable.TryGetValue(damageType, out CassieAnnouncement cause)
+                || config.DamageTypeTerminationAnnouncementLookupTable.TryGetValue(CassieDamageType.Unknown, out cause))
+            {
+                return cause;
             }
 
-            e.IsAllowed = false;
-            global::Cassie.CassieAnnouncementDispatcher.ClearAll();
-            HandleAnnouncingWaveEntrance(e.Wave.Faction, e.Wave.IsMiniWave, e.UnitName, e.UnitNumber);
+            return new CassieAnnouncement();
         }
 
-        private void OnAnnouncingChaosEntrance(AnnouncingChaosEntranceEventArgs e)
+        private static CassieAnnouncement ResolveScp(CassieOverrideConfigs config, RoleTypeId role)
         {
-            if (!Config.ShouldOverrideAnnouncements || !e.IsAllowed)
+            if (config.ScpLookupTable.TryGetValue(role, out CassieAnnouncement entry))
             {
-                return;
+                return entry;
             }
 
-            e.IsAllowed = false;
-            global::Cassie.CassieAnnouncementDispatcher.ClearAll();
-            HandleAnnouncingWaveEntrance(e.Wave.Faction, e.Wave.IsMiniWave);
-        }
-
-        private void OnAnnouncingScpTermination(AnnouncingScpTerminationEventArgs e)
-        {
-            if (!Config.ShouldOverrideAnnouncements || !e.IsAllowed)
+            const string scpPrefix = "Scp";
+            string name = role.ToString();
+            if (!name.StartsWith(scpPrefix, StringComparison.Ordinal) || name.Length == scpPrefix.Length)
             {
-                return;
+                return new CassieAnnouncement();
             }
 
-            e.IsAllowed = false;
-            global::Cassie.CassieAnnouncementDispatcher.ClearAll();
+            string digits = name.Substring(scpPrefix.Length);
+            return new CassieAnnouncement("scp " + string.Join(" ", digits.ToCharArray()), "SCP-" + digits);
         }
 
-        public void Register()
+        private static CassieAnnouncement CreateUnitLetter(string unitLetter)
         {
-            Exiled.Events.Handlers.Map.AnnouncingNtfEntrance += OnAnnouncingNtfEntrance;
-            Exiled.Events.Handlers.Map.AnnouncingChaosEntrance += OnAnnouncingChaosEntrance;
-            Exiled.Events.Handlers.Map.AnnouncingScpTermination += OnAnnouncingScpTermination;
+            string trimmed = unitLetter?.Trim();
+            string first = string.IsNullOrEmpty(trimmed) ? DefaultUnitLetter : trimmed.Substring(0, 1);
+            return new CassieAnnouncement($"nato_{first}", trimmed);
         }
 
-        public void Unregister()
+        private static CassieAnnouncement CreateUnitNumber(int unitNumber)
         {
-            Exiled.Events.Handlers.Map.AnnouncingNtfEntrance -= OnAnnouncingNtfEntrance;
-            Exiled.Events.Handlers.Map.AnnouncingChaosEntrance -= OnAnnouncingChaosEntrance;
-            Exiled.Events.Handlers.Map.AnnouncingScpTermination -= OnAnnouncingScpTermination;
+            return new CassieAnnouncement(
+                unitNumber.ToString(CultureInfo.InvariantCulture),
+                unitNumber.ToString("00", CultureInfo.InvariantCulture));
         }
-#endif
     }
 }

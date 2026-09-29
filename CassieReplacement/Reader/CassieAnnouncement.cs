@@ -1,39 +1,19 @@
 namespace CassieReplacement.Reader
 {
-    using CassieReplacement;
+    using System.Globalization;
     using CassieReplacement.Config;
-#if EXILED
-    using Exiled.API.Features;
-#endif
-    using NorthwoodLib.Pools;
+    using CassieReplacement.Playback;
     using PlayerRoles;
-    using Respawning;
-    using System.Linq;
-    using System.Text;
-    using YamlDotNet.Serialization;
 
 #pragma warning disable SA1600
     public class CassieAnnouncement
     {
-        public static CassieAnnouncement operator +(CassieAnnouncement left, CassieAnnouncement right)
+        private string words = string.Empty;
+
+        private string translation = string.Empty;
+
+        public CassieAnnouncement()
         {
-            return new CassieAnnouncement($"{left.Words} {right.Words}", $"{left.Translation} {right.Translation}");
-        }
-
-        private static CassieOverrideConfigs Config => Plugin.Singleton.Config.CassieOverrideConfig;
-
-        private static int ScpsLeft => ReferenceHub.AllHubs.Where(hub => hub.IsSCP(includeZombies: false)).Count();
-
-        private static int PlayersLeft(Team team) => ReferenceHub.AllHubs.Where(hub => hub.GetTeam() == team).Count();
-
-        public CassieAnnouncement Replace(string oldText, CassieAnnouncement newText)
-        {
-            return new CassieAnnouncement(Words.Replace(oldText, newText.Words), Translation.Replace(oldText, newText.Translation));
-        }
-
-        public CassieAnnouncement Replace(string oldText, string newText)
-        {
-            return new CassieAnnouncement(Words.Replace(oldText, newText), Translation.Replace(oldText, newText));
         }
 
         public CassieAnnouncement(string words, string translation = "")
@@ -42,80 +22,99 @@ namespace CassieReplacement.Reader
             Translation = translation;
         }
 
-        public void ReplaceVoid(string oldText, string newText)
-        {
-            Words = Words.Replace(oldText, newText);
-            Translation = Translation.Replace(oldText, newText);
-        }
-
-        public void ReplaceVoid(string oldText, CassieAnnouncement newText)
-        {
-            Words = Words.Replace(oldText, newText.Words);
-            Translation = Translation.Replace(oldText, newText.Translation);
-        }
-
-        public CassieAnnouncement GenericReplacement()
-        {
-            return new CassieAnnouncement(Words, Translation)
-                .Replace("{threatoverview}", ScpsLeft == 0 ? Config.ThreatOverviewNoScps : ScpsLeft == 1 ? Config.ThreatOverviewOneScp : Config.ThreatOverviewScps)
-                .Replace("{scps}", ScpsLeft.ToString())
-                .Replace("{classds}", PlayersLeft(Team.ClassD).ToString())
-                .Replace("{scientists}", PlayersLeft(Team.Scientists).ToString())
-                .Replace("{foundationforces}", PlayersLeft(Team.FoundationForces).ToString())
-                .Replace("{chaosinsurgencys}", PlayersLeft(Team.ChaosInsurgency).ToString())
-                .Replace("{flamingos}", PlayersLeft(Team.Flamingos).ToString());
-        }
-
-        public CassieAnnouncement()
-        {
-        }
-
-        private string words;
-
-        private string translation;
-
         public bool IsNoisy { get; set; } = true;
 
         public string Words
         {
             get => words;
-            set => words = value.ToLower();
+            set => words = (value ?? string.Empty).ToLowerInvariant();
         }
 
         public string Translation
         {
             get => translation;
-            set => translation = value;
+            set => translation = value ?? string.Empty;
         }
 
-        [YamlIgnore]
-        public bool IsCustomMessage => Words.StartsWith(Plugin.Singleton.Config.CustomCassiePrefix);
+        private static CassieOverrideConfigs OverrideConfig => Plugin.Singleton.Config.CassieOverrideConfig;
 
-        public void Announce(bool isHeld = false, bool? isNoisy = null, bool isSubtitles = true)
+        public static CassieAnnouncement operator +(CassieAnnouncement left, CassieAnnouncement right)
         {
-            bool playNoise = IsNoisy;
-            if (isNoisy != null)
+            return new CassieAnnouncement($"{left.Words} {right.Words}", $"{left.Translation} {right.Translation}");
+        }
+
+        public CassieAnnouncement Replace(string oldText, CassieAnnouncement newText)
+        {
+            return new CassieAnnouncement(Words.Replace(oldText, newText.Words), Translation.Replace(oldText, newText.Translation)) { IsNoisy = IsNoisy };
+        }
+
+        public CassieAnnouncement Replace(string oldText, string newText)
+        {
+            return new CassieAnnouncement(Words.Replace(oldText, newText), Translation.Replace(oldText, newText)) { IsNoisy = IsNoisy };
+        }
+
+        public CassieAnnouncement GenericReplacement()
+        {
+            int scps = 0;
+            int classD = 0;
+            int scientists = 0;
+            int foundationForces = 0;
+            int chaos = 0;
+            int flamingos = 0;
+
+            foreach (ReferenceHub hub in ReferenceHub.AllHubs)
             {
-                playNoise = !(bool)isNoisy;
+                if (hub.IsSCP(includeZombies: false))
+                {
+                    scps++;
+                }
+
+                switch (hub.GetTeam())
+                {
+                    case Team.ClassD:
+                        classD++;
+                        break;
+                    case Team.Scientists:
+                        scientists++;
+                        break;
+                    case Team.FoundationForces:
+                        foundationForces++;
+                        break;
+                    case Team.ChaosInsurgency:
+                        chaos++;
+                        break;
+                    case Team.Flamingos:
+                        flamingos++;
+                        break;
+                }
             }
 
-            CassieAnnouncement processed = GenericReplacement();
-            Words = processed.Words;
-            Translation = processed.Translation;
+            CassieOverrideConfigs config = OverrideConfig;
+            CassieAnnouncement threatOverview = scps == 0
+                ? config.ThreatOverviewNoScps
+                : scps == 1 ? config.ThreatOverviewOneScp : config.ThreatOverviewScps;
 
-            if (string.IsNullOrWhiteSpace(Words))
+            return Replace("{threatoverview}", threatOverview)
+                .Replace("{scps}", scps.ToString(CultureInfo.InvariantCulture))
+                .Replace("{classds}", classD.ToString(CultureInfo.InvariantCulture))
+                .Replace("{scientists}", scientists.ToString(CultureInfo.InvariantCulture))
+                .Replace("{foundationforces}", foundationForces.ToString(CultureInfo.InvariantCulture))
+                .Replace("{chaosinsurgencys}", chaos.ToString(CultureInfo.InvariantCulture))
+                .Replace("{flamingos}", flamingos.ToString(CultureInfo.InvariantCulture));
+        }
+
+        public void Announce(bool? isNoisy = null, bool isSubtitles = true)
+        {
+            CassieAnnouncement processed = GenericReplacement();
+            if (string.IsNullOrWhiteSpace(processed.Words))
             {
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(Translation))
-            {
-                CassiePlayback.Play(Words, isHeld, playNoise, isSubtitles);
-            }
-            else
-            {
-                CassiePlayback.Play(Words, isHeld, playNoise, isSubtitles, Translation);
-            }
+            string prefix = Plugin.Singleton?.Config?.CustomCassiePrefix;
+            string words = string.IsNullOrEmpty(prefix) ? processed.Words : prefix + " " + processed.Words;
+
+            CassiePlayback.Play(words, isNoisy ?? IsNoisy, isSubtitles, processed.Translation);
         }
     }
 }

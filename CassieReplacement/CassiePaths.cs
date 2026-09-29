@@ -1,6 +1,7 @@
 namespace CassieReplacement
 {
     using System.IO;
+    using System.Text.RegularExpressions;
     using LabApi.Loader.Features.Paths;
 
     public static class CassiePaths
@@ -9,11 +10,17 @@ namespace CassieReplacement
 
         public const string DefaultFolderName = "CASSIE Replacement";
 
+        private static readonly Regex PlaceholderRegex = new Regex(
+            @"\{(?:labapi_configs|exiled_config)\}",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static string ConfigsRoot => PathManager.Configs.FullName;
+
         public static string DefaultAudioDirectory
         {
             get
             {
-                string path = Path.Combine(PathManager.Configs.FullName, DefaultFolderName);
+                string path = Path.Combine(ConfigsRoot, DefaultFolderName);
                 Directory.CreateDirectory(path);
                 return path;
             }
@@ -26,38 +33,13 @@ namespace CassieReplacement
                 return DefaultAudioDirectory;
             }
 
-            path = path.Trim();
-            if (path.IndexOf(Placeholder, System.StringComparison.OrdinalIgnoreCase) >= 0)
+            string resolved = PlaceholderRegex.Replace(path.Trim(), _ => ConfigsRoot);
+            if (!Path.IsPathRooted(resolved))
             {
-                path = ReplaceIgnoreCase(path, Placeholder, PathManager.Configs.FullName);
+                resolved = Path.Combine(ConfigsRoot, resolved);
             }
 
-            if (path.IndexOf("{exiled_config}", System.StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-#if EXILED
-                path = ReplaceIgnoreCase(path, "{exiled_config}", Exiled.API.Features.Paths.Configs);
-#else
-                path = ReplaceIgnoreCase(path, "{exiled_config}", PathManager.Configs.FullName);
-#endif
-            }
-            if (!Path.IsPathRooted(path))
-            {
-                path = Path.Combine(PathManager.Configs.FullName, path);
-            }
-
-            Directory.CreateDirectory(path);
-            return Path.GetFullPath(path);
-        }
-
-        private static string ReplaceIgnoreCase(string input, string oldValue, string newValue)
-        {
-            int index = input.IndexOf(oldValue, System.StringComparison.OrdinalIgnoreCase);
-            if (index < 0)
-            {
-                return input;
-            }
-
-            return input.Substring(0, index) + newValue + input.Substring(index + oldValue.Length);
+            return Path.GetFullPath(resolved);
         }
     }
 }

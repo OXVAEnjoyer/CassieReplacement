@@ -1,5 +1,6 @@
-﻿namespace CassieReplacement.Patches
+namespace CassieReplacement.Patches
 {
+    using CassieReplacement.Playback;
     using HarmonyLib;
     using PlayerRoles;
     using PlayerStatsSystem;
@@ -7,21 +8,22 @@
     [HarmonyPatch(typeof(Cassie.CassieScpTerminationAnnouncement), nameof(Cassie.CassieScpTerminationAnnouncement.AnnounceScpTermination))]
     public static class TerminationAnnouncementSendPatch
     {
+        [HarmonyPrefix]
         public static bool Prefix(ReferenceHub scp, DamageHandlerBase hit)
         {
-            if (!Plugin.Singleton.Config.CassieOverrideConfig.ShouldOverrideAnnouncements)
+            if (Plugin.Singleton?.Config?.CassieOverrideConfig.ShouldOverrideAnnouncements != true)
             {
                 return true;
             }
 
-            if (scp == null || scp.roleManager == null || scp.roleManager.CurrentRole == null || scp.roleManager.CurrentRole.Team != Team.SCPs)
+            PlayerRoleBase role = scp != null && scp.roleManager != null ? scp.roleManager.CurrentRole : null;
+            if (role == null || role.Team != Team.SCPs)
             {
                 return true;
             }
 
-            global::Cassie.CassieAnnouncementDispatcher.ClearAll();
-            CassieEventHandlers.HandleAnnouncingTermination(hit, scp.roleManager.CurrentRole.RoleTypeId);
-
+            CassiePlayback.ClearAll();
+            CassieEventHandlers.HandleAnnouncingTermination(hit, role.RoleTypeId);
             return false;
         }
     }

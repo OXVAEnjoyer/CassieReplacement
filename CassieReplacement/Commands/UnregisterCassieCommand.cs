@@ -1,25 +1,34 @@
-using CassieReplacement.Reader;
-using CommandSystem;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
 namespace CassieReplacement.Commands
 {
+    using System;
+    using CassieReplacement.Reader;
+    using CommandSystem;
+
     [CommandHandler(typeof(RemoteAdminCommandHandler))]
     public class UnregisterCassieCommand : ICommand
     {
         public string Command => "unregistercassie";
 
-        public string[] Aliases => new string[] { "customcassieunregister", "unregistercc", "unregister" };
+        public string[] Aliases { get; } = { "customcassieunregister", "unregistercc", "unregister" };
 
         public string Description => "De-registers all custom CASSIE lines.";
 
         public bool Execute(ArraySegment<string> arguments, ICommandSender sender, out string response)
         {
-            CustomCassieReader.Singleton.ClipDatabase.UnregisterClips();
+            if (!sender.CheckPermission(PlayerPermissions.ServerConsoleCommands, out response))
+            {
+                return false;
+            }
+
+            CustomCassieReader reader = CustomCassieReader.Singleton;
+            if (reader == null)
+            {
+                response = "CASSIE Replacement is not enabled.";
+                return false;
+            }
+
+            reader.CancelAll();
+            reader.ClipDatabase.UnregisterClips();
             response = "Unregistered clips.";
             return true;
         }

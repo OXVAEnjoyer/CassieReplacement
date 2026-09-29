@@ -1,86 +1,120 @@
 namespace CassieReplacement.Reader
 {
-    using CassieReplacement.Config;
-    using CassieReplacement.Reader.Models;
     using System;
     using System.Collections.Generic;
     using System.IO;
-    using System.Linq;
-    using System.Text;
+    using System.Threading;
     using System.Threading.Tasks;
-    public class ClipDatabase
+    using CassieReplacement.Reader.Models;
+    using LabApi.Features.Console;
+
+    public sealed class ClipDatabase
     {
-        private List<CassieClip> registeredClips { get; set; } = new List<CassieClip>();
+        private readonly object writeLock = new object();
 
-        public List<CassieClip> RegisteredClips => registeredClips;
+        private volatile Dictionary<string, CassieClip> clips = new Dictionary<string, CassieClip>(StringComparer.Ordinal);
 
-        public List<string> RegisteredClipNames => RegisteredClips.Select(c => c.Name).ToList();
+        private int version;
 
-        public List<string> ListableClipNames => RegisteredClips.Where(c => c.ShouldList).Select(c => c.Name).ToList();
+        public int Version => Volatile.Read(ref version);
 
-        public CassieClip GetClip(string name)
+        public int Count => clips.Count;
+
+        public bool TryGetClip(string name, out CassieClip clip) => clips.TryGetValue(name, out clip);
+
+        public List<string> GetListableClipNames()
         {
-            name = name.ToLower();
-            IEnumerable<CassieClip> clips = registeredClips.Where(c => c.Name == name);
-            return clips.FirstOrDefault();
-        }
-
-        public float GetClipLength(string clipName)
-        {
-            CassieClip clip = GetClip(clipName);
-            if (clip is not null)
+            List<string> names = new List<string>();
+            foreach (CassieClip clip in clips.Values)
             {
-                return clip.Length;
-            }
-
-            return 0f;
-        }
-
-        public float GetClipBaseLength(string clipName)
-        {
-            CassieClip clip = GetClip(clipName);
-            if (clip is not null)
-            {
-                return clip.BaseLength;
-            }
-
-            return 0f;
-        }
-
-        public void RegisterFolder(CassieDirectorySerializable directoryConfiguration, string directory = null)
-        {
-            string resolvedPath = CassiePaths.Resolve(directoryConfiguration.Path);
-            DirectoryInfo d = new DirectoryInfo(resolvedPath);
-            if (directory is not null)
-            {
-                d = new DirectoryInfo(directory);
-            }
-
-            if (!d.Exists)
-            {
-                d.Create();
-            }
-
-            foreach (DirectoryInfo directoryInfo in d.GetDirectories())
-            {
-                RegisterFolder(directoryConfiguration, directoryInfo.FullName);
-            }
-
-            foreach (FileInfo file in d.GetFiles("*.ogg"))
-            {
-                CassieClip cassieClip = new CassieClip(file, directoryConfiguration.BleedTime, directoryConfiguration.Prefix, directoryConfiguration.ShouldList);
-                while (RegisteredClipNames.Contains(cassieClip.Name))
+                if (clip.ShouldList)
                 {
-                    cassieClip.Name += "_";
+                    names.Add(clip.Name);
+                }
+            }
+
+            names.Sort(StringComparer.Ordinal);
+            return names;
+        }
+
+        public void RegisterFolder(CassieDirectorySerializable configuration, bool createIfMissing = false)
+        {
+            DirectoryInfo root = new DirectoryInfo(CassiePaths.Resolve(configuration.Path));
+            if (!root.Exists)
+            {
+                if (!createIfMissing)
+                {
+                    return;
                 }
 
-                registeredClips.Add(cassieClip);
+                root.Create();
             }
+
+            List<CassieClip> found = new List<CassieClip>();
+            Scan(root, configuration, found);
+
+            lock (writeLock)
+            {
+                Dictionary<string, CassieClip> next = new Dictionary<string, CassieClip>(clips, StringComparer.Ordinal);
+                foreach (CassieClip clip in found)
+                {
+                    string name = clip.Name;
+                    while (next.ContainsKey(name))
+                    {
+                        name += "_";
+                    }
+
+                    clip.Name = name;
+                    next.Add(name, clip);
+                }
+
+                clips = next;
+                Interlocked.Increment(ref version);
+            }
+        }
+
+        public Task RegisterFolderAsync(CassieDirectorySerializable configuration)
+        {
+            return Task.Run(() =>
+            {
+                try
+                {
+                    RegisterFolder(configuration);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"[CassieReplacement] Registering '{configuration.Path}' failed: {ex}");
+                }
+            });
         }
 
         public void UnregisterClips()
         {
-            registeredClips.Clear();
+            lock (writeLock)
+            {
+                clips = new Dictionary<string, CassieClip>(StringComparer.Ordinal);
+                Interlocked.Increment(ref version);
+            }
+        }
+
+        private static void Scan(DirectoryInfo directory, CassieDirectorySerializable configuration, List<CassieClip> output)
+        {
+            foreach (DirectoryInfo child in directory.EnumerateDirectories())
+            {
+                Scan(child, configuration, output);
+            }
+
+            foreach (FileInfo file in directory.EnumerateFiles("*.ogg"))
+            {
+                try
+                {
+                    output.Add(new CassieClip(file, configuration.BleedTime, configuration.Prefix, configuration.ShouldList));
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn($"[CassieReplacement] Skipping unreadable clip '{file.FullName}': {ex.Message}");
+                }
+            }
         }
     }
 }
