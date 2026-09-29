@@ -1,22 +1,13 @@
 namespace CassieReplacement.Config
 {
-    using CassieReplacement.Reader.Models;
     using System.Collections.Generic;
     using System.ComponentModel;
-#if EXILED
-    using Exiled.API.Interfaces;
+    using CassieReplacement.Reader.Models;
 
-    public class Config : IConfig
+    // REFACTOR: klasa nazywała się "Config" w namespace "CassieReplacement.Config" - kolizja nazw (namespace vs typ).
+    // Nazwy WŁAŚCIWOŚCI zostały bez zmian, więc istniejące pliki YAML użytkowników dalej działają.
+    public class CassieConfig
     {
-        public bool IsEnabled { get; set; } = true;
-
-        public bool Debug { get; set; } = false;
-
-#else
-
-    public class Config
-    {
-#endif
         public bool UseGlobalSpeaker { get; set; } = true;
 
         public bool UseSpatialSpeakers { get; set; } = false;

@@ -1,580 +1,400 @@
-﻿namespace CassieReplacement.Reader
+namespace CassieReplacement.Reader
 {
-    using CassieReplacement;
+    using System;
+    using System.Collections.Concurrent;
+    using System.Collections.Generic;
+    using System.Threading.Tasks;
     using CassieReplacement.Audio;
     using CassieReplacement.Config;
+    using CassieReplacement.Playback;
     using CassieReplacement.Reader.Models;
+    using LabApi.Features.Console;
     using MEC;
     using NVorbis;
     using SecretLabNAudio.Core;
     using SecretLabNAudio.Core.Extensions;
-    using SecretLabNAudio.Core.Processors;
-    using System;
-    using System.Collections.Generic;
-    using System.IO;
-    using System.Linq;
-    using System.Text;
-    using System.Threading.Tasks;
-    using UnityEngine;
-    using NorthwoodLib.Pools;
-    using Utils.NonAllocLINQ;
-        using static NineTailedFoxAnnouncer;
 
-    public class CustomCassieReader
+    /// <summary>
+    /// Odtwarza własne klipy CASSIE. Komunikaty są kolejkowane i odtwarzane po kolei przez JEDNĄ coroutine.
+    ///
+    /// REFACTOR / FIX:
+    ///  - jedna coroutine zamiast jednej na komunikat: koniec z nakładaniem się komunikatów, które nawzajem ucinały sobie audio
+    ///    (StopPlayers jednego zatrzymywał słowo drugiego),
+    ///  - koniec z HandlesToMessages/IsBeingUsed (modyfikacja słownika w foreach = InvalidOperationException, wyciek wpisów),
+    ///  - anulowanie = KillCoroutines + Clear (wcześniej DateTime.Now, które NIE anulowało komunikatu będącego w 2.35 s 'bell lead-in'),
+    ///  - koniec z statycznym ticksSinceCassieSpoke i coroutine CassieCheck (nigdy nie czytane, działała co klatkę do końca świata).
+    /// </summary>
+    public sealed class CustomCassieReader : IDisposable
     {
-        private static int ticksSinceCassieSpoke = 0;
+        private const string CoroutineTag = "CassieReplacement.Reader";
+        private const float BellLeadInSeconds = 2.35f;
+        private const float JamRepeatSeconds = 0.13f;
+        private const int JamMaxPercent = 100;
+        private const float PercentToFraction = 0.01f;
+        private const int DefaultSampleRate = 48000;
+        private const int MaxCachedClips = 1024;
 
-        private string currentPrefix = string.Empty;
+        private readonly Plugin plugin;
+        private readonly SpeakerManager speakers;
+        private readonly Queue<CassieMessage> queue = new Queue<CassieMessage>();
 
-        private string currentSuffix = string.Empty;
+        // OPTYMALIZACJA: jeden cache zdekodowanych próbek (klucz: klip + pitch). Zastępuje SampleCache, PitchSampleCache
+        // (zapisywany, nigdy nie czytany) i PitchShiftedTempClips. Dekodowanie robione w tle, przed startem komunikatu.
+        private readonly ConcurrentDictionary<SampleKey, SampleData> sampleCache = new ConcurrentDictionary<SampleKey, SampleData>();
 
-        public static CustomCassieReader Singleton { get; internal set; } = new CustomCassieReader();
+        private CoroutineHandle runner;
+        private int cachedDatabaseVersion = -1;
 
-        private Dictionary<string, CassieClip> PitchShiftedTempClips { get; set; } = new Dictionary<string, CassieClip>();
-
-        private readonly Dictionary<string, float[]> PitchSampleCache = new Dictionary<string, float[]>();
-
-        private readonly Dictionary<string, SampleCacheEntry> SampleCache = new Dictionary<string, SampleCacheEntry>(StringComparer.OrdinalIgnoreCase);
-
-        private sealed class SampleCacheEntry
+        private CustomCassieReader(Plugin plugin, SpeakerManager speakers)
         {
-            public float[] Samples;
-            public int SampleRate;
-            public int Channels;
+            this.plugin = plugin;
+            this.speakers = speakers;
         }
 
-        public ClipDatabase ClipDatabase { get; set; } = new ();
+        // FIX: brak statycznego inicjalizatora tworzącego instancję przed startem pluginu.
+        public static CustomCassieReader Singleton { get; private set; }
 
-        private CassieClip GetClip(string name)
+        public ClipDatabase ClipDatabase { get; } = new ClipDatabase();
+
+        private CassieConfig Config => plugin.Config;
+
+        internal static void Create(Plugin plugin, SpeakerManager speakers)
         {
-            name = name.ToLower();
-            CassieClip clip = ClipDatabase.GetClip(name);
-            if (clip is not null)
-            {
-                return clip;
-            }
-            else
-            {
-                PitchShiftedTempClips.TryGetValue(name, out clip);
-                return clip;
-            }
-
+            Singleton?.Dispose();
+            Singleton = new CustomCassieReader(plugin, speakers);
         }
 
-        private float GetClipLength(string clipName)
+        public void CassieReadMessage(string words, bool isNoisy = true, bool customAnnouncement = true, string translation = "", bool useCassie = true)
         {
-            CassieClip clip = GetClip(clipName);
-
-            string[] splits = clipName.Split('-');
-            if (clip is not null)
-            {
-                return clip.Length;
-            }
-            else if (splits.Length > 1 && float.TryParse(splits[1], out float reverb))
-            {
-                return GetClipLength(splits[0]) - reverb;
-            }
-
-            return 0f;
+            CassieReadMessage(words.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries), isNoisy, customAnnouncement, translation, useCassie);
         }
 
-        private Config Config => Plugin.Singleton.Config;
-
-        internal Dictionary<CoroutineHandle, List<string>> HandlesToMessages { get; set; } = new Dictionary<CoroutineHandle, List<string>>();
-
-        private bool IsBeingUsed(string name)
+        public void CassieReadMessage(IReadOnlyList<string> words, bool isNoisy = true, bool customAnnouncement = true, string translation = "", bool useCassie = true)
         {
-            foreach (var kvp in HandlesToMessages)
-            {
-                if (kvp.Key.IsRunning && kvp.Value.Contains(name))
-                {
-                    return true;
-                }
+            speakers.EnsureReady();
 
-                if (!kvp.Key.IsRunning)
-                {
-                    HandlesToMessages.Remove(kvp.Key);
-                }
+            CassieMessage message = CassieMessageParser.Parse(words, ClipDatabase, Config, useCassie, translation);
+
+            if (message.BaseAnnouncement != null)
+            {
+                CassiePlayback.Play(message.BaseAnnouncement, isNoisy, customAnnouncement, message.Subtitle);
             }
 
-            return false;
-        }
-
-        public List<AudioPlayer> AudioPlayers { get; set; } = new List<AudioPlayer>();
-
-        public void StopAllPlayback()
-        {
-            if (AudioPlayers == null)
+            if (message.Steps.Count == 0)
             {
                 return;
             }
 
-            foreach (AudioPlayer audioPlayer in AudioPlayers)
-            {
-                if (audioPlayer == null)
-                {
-                    continue;
-                }
+            message.LeadInSeconds = useCassie && isNoisy ? BellLeadInSeconds : 0f;
+            message.Prepared = PrepareSamples(message);
+            queue.Enqueue(message);
 
-                AudioQueue queue = audioPlayer.Queue;
-                queue?.Clear();
-                audioPlayer.WithoutProvider();
+            if (!runner.IsRunning)
+            {
+                runner = Timing.RunCoroutine(RunQueue(), CoroutineTag);
             }
         }
 
-        internal DateTime TimeBeforeWhichToPause { get; set; } = DateTime.MinValue;
-
-        public static IEnumerator<float> CassieCheck()
+        /// <summary>Przerywa bieżący komunikat i czyści kolejkę.</summary>
+        public void CancelAll()
         {
-            while (true)
-            {
-                if (NineTailedFoxAnnouncer.singleton.queue.Count != 0)
-                {
-                    ticksSinceCassieSpoke = 0;
-                }
-                else
-                {
-                    ticksSinceCassieSpoke++;
-                }
+            Timing.KillCoroutines(runner);
+            queue.Clear();
+            speakers.StopAll();
+        }
 
+        public void Dispose()
+        {
+            CancelAll();
+            sampleCache.Clear();
+            ClipDatabase.UnregisterClips();
+
+            if (ReferenceEquals(Singleton, this))
+            {
+                Singleton = null;
+            }
+        }
+
+        private IEnumerator<float> RunQueue()
+        {
+            while (queue.Count > 0)
+            {
+                IEnumerator<float> playback = PlayMessage(queue.Dequeue());
+                while (playback.MoveNext())
+                {
+                    yield return playback.Current;
+                }
+            }
+        }
+
+        private IEnumerator<float> PlayMessage(CassieMessage message)
+        {
+            if (message.LeadInSeconds > 0f)
+            {
+                yield return Timing.WaitForSeconds(message.LeadInSeconds);
+            }
+
+            // Dekodowanie ogg trwa w tle - main thread nie robi już I/O w PlayWord.
+            while (!message.Prepared.IsCompleted)
+            {
                 yield return Timing.WaitForOneFrame;
             }
-        }
 
-        public void CassieReadMessage(List<string> messages, bool isNoisy = true, bool customAnnouncement = true, string translation = "", bool useCassie = true)
-        {
-            StartMessage(messages, AudioPlayers, isNoisy, customAnnouncement, translation, useCassie);
-        }
-
-        public void CassieReadMessage(string messages, bool isNoisy = true, bool customAnnouncement = true, string translation = "", bool useCassie = true)
-        {
-            StartMessage(messages.Split(' ').ToList(), AudioPlayers, isNoisy, customAnnouncement, translation, useCassie);
-        }
-
-        private static float[] Resample(float[] inputBuffer, int inputSampleRate, int outputSampleRate)
-        {
-            double sampleRateRatio = (double)outputSampleRate / inputSampleRate;
-            int outputBufferLength = (int)(inputBuffer.Length * sampleRateRatio);
-
-            float[] outputBuffer = new float[outputBufferLength];
-
-            for (int i = 0; i < outputBufferLength; i++)
+            foreach (CassieStep step in message.Steps)
             {
-                double position = i / sampleRateRatio;
-                int leftIndex = (int)Math.Floor(position);
-                int rightIndex = leftIndex + 1;
-
-                double fraction = position - leftIndex;
-
-                if (rightIndex >= inputBuffer.Length)
+                if (step.Kind == StepKind.Yield)
                 {
-                    outputBuffer[i] = inputBuffer[leftIndex];
-                }
-                else
-                {
-                    outputBuffer[i] = (float)(inputBuffer[leftIndex] * (1 - fraction) + inputBuffer[rightIndex] * fraction);
-                }
-            }
-
-            return outputBuffer;
-        }
-
-        private void StartMessage(List<string> messages, List<AudioPlayer> audioPlayers, bool isNoisy = false, bool customAnnouncement = true, string translation = "", bool useCassie = true)
-        {
-            StringBuilder baseCassieAnnouncement = StringBuilderPool.Shared.Rent();
-            HashSet<CassieClip> clipsToUnregister = new HashSet<CassieClip>();
-            Dictionary<string, Task> tasks = new Dictionary<string, Task>();
-            float pitch = 1.0f;
-
-            for (int i = 0; i < messages.Count; i++)
-            {
-                string msg = messages[i].ToLowerInvariant();
-                if (string.IsNullOrWhiteSpace(msg))
-                {
-                    messages.RemoveAt(i);
-                    i--;
-                    continue;
-                }
-                if (NineTailedFoxAnnouncer.VoiceLine.IsJam(msg, out _, out _))
-                {
+                    yield return Timing.WaitForSeconds(step.Seconds);
                     continue;
                 }
 
-                if (NineTailedFoxAnnouncer.VoiceLine.IsPitch(msg, out float pitchValue))
+                if (step.Clip == null)
                 {
-                    pitch = pitchValue;
-                    if (useCassie)
-                    {
-                        baseCassieAnnouncement.Append($" {msg}");
-                    }
-
-                    continue;
-                }
-                if (msg.StartsWith("prefix_", StringComparison.OrdinalIgnoreCase)
-                    || msg.StartsWith("suffix_", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (msg.StartsWith("prefix_", StringComparison.OrdinalIgnoreCase))
-                    {
-                        currentPrefix = msg.Length > 7 ? msg.Substring(7) : string.Empty;
-                    }
-                    else
-                    {
-                        currentSuffix = msg.Length > 7 ? msg.Substring(7) : string.Empty;
-                    }
-
-                    messages.RemoveAt(i);
-                    i--;
+                    yield return Timing.WaitForSeconds(CassieTokens.EstimateWordSeconds(step.Name, step.Pitch));
                     continue;
                 }
 
-                string oldMsg = msg;
-                msg = $"{currentPrefix}{msg}{currentSuffix}";
+                float length = step.Clip.Length / step.Pitch;
+                PlayWord(step);
 
-                CassieClip msgCassieClip = ClipDatabase.RegisteredClips.FirstOrDefault(c => c.Name == msg);
-
-                if (msgCassieClip is not null)
+                if (step.JamDelay > 0 && step.JamDelay < JamMaxPercent)
                 {
-                    if (pitch != 1.0f)
+                    yield return Timing.WaitForSeconds(length * step.JamDelay * PercentToFraction);
+                    speakers.StopAll();
+
+                    for (int i = 0; i < step.JamAmount; i++)
                     {
-                        string newName = $"p{pitch}_{msgCassieClip.Name}";
-                        if (!PitchShiftedTempClips.TryGetValue(newName, out CassieClip pitched))
-                        {
-                            msgCassieClip = new CassieClip(newName, msgCassieClip.FileInfo, msgCassieClip.BaseLength / pitch, msgCassieClip.Reverb / pitch);
-                            PitchShiftedTempClips.Add(newName, msgCassieClip);
-                            msg = msgCassieClip.Name;
-                        }
-                        else
-                        {
-                            msgCassieClip = pitched;
-                            msg = pitched.Name;
-                        }
-                    }
-
-                    messages[i] = msg;
-                    clipsToUnregister.Add(msgCassieClip);
-
-                    if (pitch != 1.0f)
-                    {
-                        float workingPitch = pitch;
-                        string clipName = msgCassieClip.Name;
-                        string path = msgCassieClip.FileInfo.FullName;
-                        Task task = Task.Run(() =>
-                        {
-                            float[] array;
-                            using (VorbisReader vorbisReader = new VorbisReader(path))
-                            {
-                                array = new float[vorbisReader.TotalSamples * vorbisReader.Channels];
-                                vorbisReader.ReadSamples(array);
-                            }
-
-                            array = Resample(array, 48000, Convert.ToInt32(48000 / workingPitch));
-                            lock (PitchSampleCache)
-                            {
-                                PitchSampleCache[clipName] = array;
-                            }
-                        });
-
-                        if (!tasks.ContainsKey(msgCassieClip.Name))
-                        {
-                            tasks.Add(msgCassieClip.Name, task);
-                        }
-                    }
-
-                    if (useCassie)
-                    {
-                        if (Config.WordsToBasegameOverride.TryGetValue(msg, out string word))
-                        {
-                            baseCassieAnnouncement.Append($" {word}");
-                        }
-                        else if (msg == "<split>")
-                        {
-                            baseCassieAnnouncement.Append(" <split>");
-                        }
-                        else
-                        {
-                            int howManyDotsToAdd = (int)Math.Round(msgCassieClip.Length * 2, MidpointRounding.AwayFromZero);
-                            baseCassieAnnouncement.Append(" pitch_1");
-                            for (int j = 0; j < howManyDotsToAdd; j++)
-                            {
-                                baseCassieAnnouncement.Append(" .");
-                            }
-
-                            baseCassieAnnouncement.Append($" pitch_{pitch} jam_0_0");
-                        }
-                    }
-                }
-                else if (int.TryParse(oldMsg, out int num))
-                {
-                    string[] numbers = NineTailedFoxAnnouncer.ConvertNumber(num).Split(' ');
-                    messages.RemoveAt(i);
-                    for (int j = 0; j < numbers.Length; j++)
-                    {
-                        messages.Insert(i + j, numbers[j]);
-                    }
-
-                    i--;
-                }
-                else
-                {
-                    messages[i] = msg;
-
-                    if (useCassie)
-                    {
-                        baseCassieAnnouncement.Append($" {(Config.WordsToBasegameOverride.TryGetValue(msg, out string word) ? word : oldMsg)}");
-                    }
-                }
-            }
-
-            currentPrefix = string.Empty;
-            currentSuffix = string.Empty;
-            if (useCassie)
-            {
-                baseCassieAnnouncement.Insert(0, "noparse ");
-                string subtitle = string.IsNullOrWhiteSpace(translation) ? string.Join(" ", messages) : translation;
-                CassiePlayback.Play(StringBuilderPool.Shared.ToStringReturn(baseCassieAnnouncement), false, isNoisy, customAnnouncement, subtitle);
-            }
-            else
-            {
-                StringBuilderPool.Shared.Return(baseCassieAnnouncement);
-            }
-
-            float bellLeadIn = (useCassie && isNoisy) ? CassieBellLeadInSeconds : 0f;
-            HandlesToMessages.Add(
-                Timing.RunCoroutine(ReadWords(messages, audioPlayers, clipsToUnregister, tasks, bellLeadIn)),
-                messages);
-        }
-
-        private const float CassieBellLeadInSeconds = 2.35f;
-
-        private IEnumerator<float> ReadWords(
-            List<string> messages,
-            List<AudioPlayer> audioPlayers,
-            HashSet<CassieClip> clipsToUnregister = null,
-            Dictionary<string, Task> tasksToAwait = null,
-            float bellLeadInSeconds = 0f)
-        {
-            if (messages.Count == 0)
-            {
-                yield break;
-            }
-
-            if (bellLeadInSeconds > 0f)
-            {
-                yield return Timing.WaitForSeconds(bellLeadInSeconds);
-            }
-
-            DateTime timeStarted = DateTime.Now;
-            int jamDelay = 0;
-            int jamAmount = 0;
-            float pitch = 1.0f;
-
-            foreach (string msg in messages)
-            {
-                if (TimeBeforeWhichToPause >= timeStarted)
-                {
-                    break;
-                }
-
-                if (NineTailedFoxAnnouncer.VoiceLine.IsPitch(msg, out float pitchValue))
-                {
-                    pitch = pitchValue;
-                    continue;
-                }
-
-                if (NineTailedFoxAnnouncer.VoiceLine.IsYield(msg, out float yield))
-                {
-                    yield return Timing.WaitForSeconds(yield);
-                    continue;
-                }
-
-                if (NineTailedFoxAnnouncer.VoiceLine.IsJam(msg, out int newDelay, out int newAmount))
-                {
-                    jamDelay = newDelay;
-                    jamAmount = newAmount;
-                    continue;
-                }
-
-                int workingJamDelay = jamDelay;
-                int workingJamAmount = jamAmount;
-                jamDelay = 0;
-                jamAmount = 0;
-
-                tasksToAwait.TryGetValue(msg, out Task currentWordTask);
-                while (currentWordTask is not null && !currentWordTask.IsCompleted)
-                {
-                    yield return Timing.WaitForOneFrame;
-                }
-
-                CassieClip clip = GetClip(msg);
-                if (clip is null || clip.FileInfo is null || !clip.FileInfo.Exists)
-                {
-                    string jams = string.Empty;
-                    if (workingJamDelay != 0 || workingJamAmount != 0)
-                    {
-                        jams = $"jam_{workingJamDelay}_{workingJamAmount} ";
-                    }
-
-                    yield return Timing.WaitForSeconds(NineTailedFoxAnnouncer.singleton.CalculateDuration($"{jams}{msg}", speed: pitch));
-                    continue;
-                }
-
-                float volume = Config.CassieVolume;
-                PlayWord(audioPlayers, clip, msg, volume, pitch);
-
-                if (workingJamDelay > 0 && workingJamDelay < 100)
-                {
-                    yield return Timing.WaitForSeconds(GetClipLength(msg) * workingJamDelay * 0.01f);
-                    StopPlayers(audioPlayers);
-                    for (int i = 0; i < workingJamAmount; i++)
-                    {
-                        PlayWord(audioPlayers, clip, msg, volume, pitch);
-                        yield return Timing.WaitForSeconds(0.13f);
-                        StopPlayers(audioPlayers);
+                        PlayWord(step);
+                        yield return Timing.WaitForSeconds(JamRepeatSeconds);
+                        speakers.StopAll();
                     }
                 }
                 else
                 {
-                    yield return Timing.WaitForSeconds(GetClipLength(msg));
-                    StopPlayers(audioPlayers);
+                    yield return Timing.WaitForSeconds(length);
+                    speakers.StopAll();
                 }
             }
 
-            if (GetClip(messages.Last()) is not null)
+            CassieStep last = message.Steps[message.Steps.Count - 1];
+            if (last.Kind == StepKind.Word && last.Clip != null && last.Clip.Reverb > 0f)
             {
-                yield return Timing.WaitForSeconds(GetClip(messages.Last()).Reverb);
-            }
-
-            if (clipsToUnregister is not null)
-            {
-                foreach (var clip in clipsToUnregister)
-                {
-                    if (!IsBeingUsed(clip.Name))
-                    {
-                        PitchShiftedTempClips.Remove(clip.Name);
-                        lock (PitchSampleCache)
-                        {
-                            PitchSampleCache.Remove(clip.Name);
-                        }
-
-                        lock (SampleCache)
-                        {
-                            List<string> doomed = new List<string>();
-                            foreach (string key in SampleCache.Keys)
-                            {
-                                if (key.Equals(clip.Name, StringComparison.OrdinalIgnoreCase)
-                                    || key.EndsWith("_" + clip.Name, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    doomed.Add(key);
-                                }
-                            }
-
-                            foreach (string key in doomed)
-                            {
-                                SampleCache.Remove(key);
-                            }
-                        }
-                    }
-                }
+                yield return Timing.WaitForSeconds(last.Clip.Reverb / last.Pitch);
             }
         }
 
-        private void PlayWord(List<AudioPlayer> audioPlayers, CassieClip clip, string clipKey, float volume, float pitch)
+        private void PlayWord(in CassieStep step)
         {
-            if (audioPlayers == null || clip?.FileInfo == null || !clip.FileInfo.Exists)
+            SampleData data = GetOrDecode(step.Clip, step.Pitch);
+            if (data.Samples == null)
             {
-                return;
-            }
-            if (!TryGetSamples(clip, clipKey, pitch, out SampleCacheEntry entry))
-            {
+                Logger.Warn($"[CassieReplacement] Cannot play '{step.Name}': {data.Error}");
                 return;
             }
 
-            foreach (AudioPlayer audioPlayer in audioPlayers)
+            float volume = Config.CassieVolume;
+            IReadOnlyList<AudioPlayer> players = speakers.Players;
+
+            for (int i = 0; i < players.Count; i++)
             {
+                AudioPlayer audioPlayer = players[i];
                 if (audioPlayer == null)
                 {
                     continue;
                 }
 
-                float playerVolume = volume;
-                if (audioPlayer == Plugin.CassiePlayerGlobal)
-                {
-                    playerVolume *= Config.GlobalSpeakerVolumeMultiplier;
-                }
+                float playerVolume = ReferenceEquals(audioPlayer, speakers.GlobalPlayer)
+                    ? volume * Config.GlobalSpeakerVolumeMultiplier
+                    : volume;
 
-                audioPlayer.WithUnmanagedProvider(new FloatArraySampleProvider(entry.Samples, entry.SampleRate, entry.Channels))
+                audioPlayer.WithUnmanagedProvider(new FloatArraySampleProvider(data.Samples, data.SampleRate, data.Channels))
                     .WithMasterAmplification(playerVolume);
             }
         }
 
-        private bool TryGetSamples(CassieClip clip, string cacheKey, float pitch, out SampleCacheEntry entry)
+        private Task PrepareSamples(CassieMessage message)
         {
-            string key = pitch == 1f ? cacheKey : $"p{pitch}_{cacheKey}";
-            lock (SampleCache)
+            int databaseVersion = ClipDatabase.Version;
+            if (databaseVersion != cachedDatabaseVersion)
             {
-                if (SampleCache.TryGetValue(key, out entry))
-                {
-                    return entry?.Samples != null && entry.Samples.Length > 0;
-                }
+                sampleCache.Clear();
+                cachedDatabaseVersion = databaseVersion;
             }
 
-            try
+            List<Task> tasks = null;
+            HashSet<SampleKey> scheduled = null;
+
+            foreach (CassieStep step in message.Steps)
             {
-                float[] array;
-                int sampleRate;
-                int channels;
-                using (VorbisReader vorbisReader = new VorbisReader(clip.FileInfo.FullName))
+                if (step.Clip == null)
                 {
-                    sampleRate = vorbisReader.SampleRate > 0 ? vorbisReader.SampleRate : 48000;
-                    channels = vorbisReader.Channels > 0 ? vorbisReader.Channels : 1;
-                    array = new float[vorbisReader.TotalSamples * channels];
-                    vorbisReader.ReadSamples(array);
+                    continue;
                 }
 
-                if (pitch != 1f && pitch > 0f)
+                SampleKey key = new SampleKey(step.Clip.Name, step.Pitch);
+                if (sampleCache.ContainsKey(key))
                 {
-                    array = Resample(array, sampleRate, Math.Max(1, Convert.ToInt32(sampleRate / pitch)));
+                    continue;
                 }
 
-                entry = new SampleCacheEntry
+                scheduled ??= new HashSet<SampleKey>();
+                if (!scheduled.Add(key))
                 {
-                    Samples = array,
-                    SampleRate = sampleRate,
-                    Channels = channels,
-                };
-
-                lock (SampleCache)
-                {
-                    SampleCache[key] = entry;
-                }
-                if (pitch != 1f)
-                {
-                    lock (PitchSampleCache)
-                    {
-                        PitchSampleCache[cacheKey] = array;
-                    }
+                    continue;
                 }
 
-                return array.Length > 0;
+                // THREAD SAFETY: w tle działa wyłącznie czysto zarządzane dekodowanie (NVorbis) bez API Unity/SCP:SL.
+                CassieClip clip = step.Clip;
+                float pitch = step.Pitch;
+                tasks ??= new List<Task>();
+                tasks.Add(Task.Run(() => GetOrDecode(clip, pitch)));
             }
-            catch
-            {
-                entry = null;
-                return false;
-            }
+
+            return tasks == null ? Task.CompletedTask : Task.WhenAll(tasks);
         }
 
-        private static void StopPlayers(List<AudioPlayer> audioPlayers)
+        private SampleData GetOrDecode(CassieClip clip, float pitch)
         {
-            if (audioPlayers == null)
+            SampleKey key = new SampleKey(clip.Name, pitch);
+            if (sampleCache.TryGetValue(key, out SampleData cached))
             {
-                return;
+                return cached;
             }
 
-            foreach (AudioPlayer audioPlayer in audioPlayers)
+            SampleData data;
+            try
             {
-                audioPlayer?.WithoutProvider();
+                data = Decode(clip, pitch);
             }
+            catch (Exception ex)
+            {
+                // Bez logowania z wątku tła - błąd trafia do SampleData i jest logowany na main threadzie w PlayWord.
+                data = SampleData.Failure(ex.Message);
+            }
+
+            if (sampleCache.Count >= MaxCachedClips)
+            {
+                sampleCache.Clear();
+            }
+
+            sampleCache[key] = data;
+            return data;
+        }
+
+        private static SampleData Decode(CassieClip clip, float pitch)
+        {
+            using VorbisReader reader = new VorbisReader(clip.FileInfo.FullName);
+
+            int sampleRate = reader.SampleRate > 0 ? reader.SampleRate : DefaultSampleRate;
+            int channels = reader.Channels > 0 ? reader.Channels : 1;
+            long total = reader.TotalSamples * channels;
+            if (total <= 0 || total > int.MaxValue)
+            {
+                return SampleData.Failure($"unsupported sample count ({total})");
+            }
+
+            float[] samples = new float[total];
+            int filled = 0;
+            while (filled < samples.Length)
+            {
+                // FIX: ReadSamples może zwrócić mniej niż zażądano - poprzednio jedno wywołanie zostawiało ciszę na końcu.
+                int read = reader.ReadSamples(samples, filled, samples.Length - filled);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                filled += read;
+            }
+
+            if (filled == 0)
+            {
+                return SampleData.Failure("no samples decoded");
+            }
+
+            if (filled < samples.Length)
+            {
+                Array.Resize(ref samples, filled);
+            }
+
+            if (pitch != 1f)
+            {
+                samples = ChangeSpeed(samples, channels, pitch);
+            }
+
+            return new SampleData(samples, sampleRate, channels);
+        }
+
+        /// <summary>
+        /// Zmiana tempa/wysokości przez interpolację liniową.
+        /// FIX: interpolacja per KLATKA (kanał po kanale). Poprzednio dla stereo mieszała próbki L i R.
+        /// Również: rate 48000 nie jest już wpisane na sztywno.
+        /// </summary>
+        private static float[] ChangeSpeed(float[] input, int channels, float pitch)
+        {
+            int inputFrames = input.Length / channels;
+            if (inputFrames == 0)
+            {
+                return input;
+            }
+
+            int outputFrames = Math.Max(1, (int)(inputFrames / pitch));
+            float[] output = new float[outputFrames * channels];
+
+            for (int frame = 0; frame < outputFrames; frame++)
+            {
+                double position = frame * (double)pitch;
+                int left = Math.Min((int)position, inputFrames - 1);
+                int right = Math.Min(left + 1, inputFrames - 1);
+                float fraction = (float)(position - left);
+
+                for (int channel = 0; channel < channels; channel++)
+                {
+                    float a = input[(left * channels) + channel];
+                    float b = input[(right * channels) + channel];
+                    output[(frame * channels) + channel] = a + ((b - a) * fraction);
+                }
+            }
+
+            return output;
+        }
+
+        private readonly struct SampleKey : IEquatable<SampleKey>
+        {
+            private readonly string name;
+            private readonly float pitch;
+
+            public SampleKey(string name, float pitch)
+            {
+                this.name = name;
+                this.pitch = pitch;
+            }
+
+            public bool Equals(SampleKey other) => pitch.Equals(other.pitch) && string.Equals(name, other.name, StringComparison.Ordinal);
+
+            public override bool Equals(object obj) => obj is SampleKey other && Equals(other);
+
+            public override int GetHashCode() => (StringComparer.Ordinal.GetHashCode(name) * 397) ^ pitch.GetHashCode();
+        }
+
+        private sealed class SampleData
+        {
+            public SampleData(float[] samples, int sampleRate, int channels)
+            {
+                Samples = samples;
+                SampleRate = sampleRate;
+                Channels = channels;
+            }
+
+            public float[] Samples { get; }
+
+            public int SampleRate { get; }
+
+            public int Channels { get; }
+
+            public string Error { get; private set; }
+
+            public static SampleData Failure(string error) => new SampleData(null, 0, 0) { Error = error };
         }
     }
 }

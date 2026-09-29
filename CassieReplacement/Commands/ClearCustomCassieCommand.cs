@@ -1,30 +1,28 @@
-using CassieReplacement.Reader;
-using CommandSystem;
-using LabApi.Features.Wrappers;
-using MEC;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
 namespace CassieReplacement.Commands
 {
+    using System;
+    using CassieReplacement.Playback;
+    using CommandSystem;
+
     [CommandHandler(typeof(RemoteAdminCommandHandler))]
     public class ClearCustomCassieCommand : ICommand
     {
         public string Command => "clearcustomcassie";
 
-        public string[] Aliases => new string[] { "customcassieclear", "clearcc", "clearcustom" };
+        public string[] Aliases { get; } = { "customcassieclear", "clearcc", "clearcustom" };
 
         public string Description => "Clears custom CASSIE lines.";
 
         public bool Execute(ArraySegment<string> arguments, ICommandSender sender, out string response)
         {
-            global::Cassie.CassieAnnouncementDispatcher.ClearAll();
-            CustomCassieReader.Singleton.TimeBeforeWhichToPause = DateTime.Now;
-            CustomCassieReader.Singleton.StopAllPlayback();
+            // FIX: brak jakiegokolwiek sprawdzenia uprawnień w oryginale - komenda RA była dostępna dla każdego z dostępem do panelu.
+            if (!sender.CheckPermission(PlayerPermissions.ServerConsoleCommands, out response))
+            {
+                return false;
+            }
 
+            // Jedno wywołanie czyści kolejkę gry i własną kolejkę audio (bez DateTime.Now).
+            CassiePlayback.ClearAll();
             response = "Cleared cassie.";
             return true;
         }

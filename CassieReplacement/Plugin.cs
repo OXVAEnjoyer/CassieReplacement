@@ -1,274 +1,135 @@
-﻿namespace CassieReplacement
+namespace CassieReplacement
 {
     using System;
-    using System.Collections.Generic;
-    using System.Linq;
+    using CassieReplacement.Audio;
+    using CassieReplacement.Config;
     using CassieReplacement.Patches;
     using CassieReplacement.Reader;
     using CassieReplacement.Reader.Models;
-    using LabApi.Features.Wrappers;
-    using MapGeneration;
-    using MEC;
-    using PlayerRoles.PlayableScps.Scp079;
-    using SecretLabNAudio.Core;
-    using SecretLabNAudio.Core.Extensions;
-    using UnityEngine;
-#if EXILED
-    using Exiled.API.Features;
-    using Exiled.CustomItems.API.Features;
-#else
-    using LabApi.Loader.Features.Plugins;
+    using LabApi.Events.Handlers;
     using LabApi.Features;
-#endif
+    using LabApi.Features.Console;
+    using LabApi.Loader.Features.Plugins;
+    using MEC;
+    using SecretLabNAudio.Core;
 
-    public class Plugin : Plugin<Config.Config>
+    // REFACTOR: EXILED (#if) usunięty - plugin jest teraz czystym LabAPI. Wersja EXILED była oznaczona jako WIP.
+    public sealed class Plugin : Plugin<CassieConfig>
     {
-        public static AudioPlayer CassiePlayer { get; private set; }
+        // FIX: wersja w jednym miejscu (README/folder mówiły 1.7.0, kod 1.9.0).
+        private static readonly Version PluginVersion = new(1, 9, 0);
 
-        public static AudioPlayer CassiePlayerGlobal { get; private set; }
+        private CoroutineHandle startupHandle;
 
-        public static Plugin Singleton;
+        public static Plugin Singleton { get; private set; }
+
+        // Zachowana kompatybilność wsteczna z innymi pluginami korzystającymi z tych właściwości.
+        public static AudioPlayer CassiePlayerGlobal => Singleton?.Speakers?.GlobalPlayer;
+
+        public static AudioPlayer CassiePlayer => Singleton?.Speakers?.SpatialPlayer;
 
         public override string Name => "CASSIE Replacement";
 
-#if EXILED
-        public override string Prefix => "cassie_replacement";
-
-        public override Version RequiredExiledVersion => new Version(9, 14, 2);
-
-        private CassieEventHandlers cassieEventHandlers { get; set; }
-#else
         public override string Description => "CASSIE replacement plugin (SecretLabNAudio)";
-
-        public override Version RequiredApiVersion => new(LabApiProperties.CompiledVersion);
-#endif
 
         public override string Author => "icedchqi";
 
-        public override Version Version => new(1, 9, 0);
+        public override Version Version => PluginVersion;
 
-        private IEnumerable<Scp079InteractableBase> allSpeakers;
+        public override Version RequiredApiVersion => new(LabApiProperties.CompiledVersion);
 
-        private readonly List<ReferenceHub> globalListenerHubs = new List<ReferenceHub>();
+        public SpeakerManager Speakers { get; private set; }
 
-        internal List<AudioPlayer> CassieAudioPlayers { get; private set; } = new List<AudioPlayer>();
-
-        public void InitSpeaker()
+        public override void Enable()
         {
-            DestroySpeakers();
-            CassieAudioPlayers.Clear();
-            globalListenerHubs.Clear();
-            allSpeakers = Scp079Speaker.AllInstances.Where(s => s is Scp079Speaker);
+            Singleton = this;
+            Speakers = new SpeakerManager(this);
+            CustomCassieReader.Create(this, Speakers);
 
-            if (Config.UseGlobalSpeaker)
+            RegisterConfiguredClips();
+
+            // FIX: gdy patchowanie się nie uda, plugin nie zostaje w stanie "pół-włączonym".
+            try
             {
-                SpeakerSettings globalSettings = SpeakerSettings.GloballyAudible with
-                {
-                    Volume = Config.GlobalSpeakerVolume,
-                };
-                CassiePlayerGlobal = AudioPlayer.Create(globalSettings);
-                if (Config.UseSpatialSpeakers)
-                {
-                    CassiePlayerGlobal.WithFilteredSendEngine(player => ShouldHearGlobal(player));
-                }
-
-                CassieAudioPlayers.Add(CassiePlayerGlobal);
+                Patcher.Apply();
             }
-
-            if (Config.UseSpatialSpeakers)
+            catch (Exception ex)
             {
-                List<Vector3> positions = new List<Vector3>();
-                foreach (Scp079InteractableBase speaker in allSpeakers)
-                {
-                    if (Config.GlobalForSurfaceOnly && speaker.Room.Zone == FacilityZone.Surface)
-                    {
-                        continue;
-                    }
-
-                    positions.Add(speaker.Position);
-                }
-
-                if (positions.Count > 0)
-                {
-                    SpeakerSettings spatialSettings = new SpeakerSettings
-                    {
-                        IsSpatial = true,
-                        Volume = Config.SpatialSpeakerVolume,
-                        MinDistance = Config.SpatialSpeakerMinDistance,
-                        MaxDistance = Config.SpatialSpeakerMaxDistance,
-                    };
-
-                    Vector3 first = positions[0];
-                    CassiePlayer = AudioPlayer.Create(spatialSettings, first)
-                        .WithFilteredSendEngine(player => player != null && !player.IsHost && player.ReferenceHub != null && !globalListenerHubs.Contains(player.ReferenceHub));
-
-                    if (positions.Count > 1)
-                    {
-                        CassiePlayer.CloneOutput(spatialSettings, positions.Skip(1));
-                    }
-
-                    CassieAudioPlayers.Add(CassiePlayer);
-                }
-            }
-
-            if (CustomCassieReader.Singleton != null)
-            {
-                CustomCassieReader.Singleton.AudioPlayers = CassieAudioPlayers;
-            }
-        }
-
-        public void EnsureSpeakers()
-        {
-            if (CassieAudioPlayers != null && CassieAudioPlayers.Count > 0 && CassieAudioPlayers.Any(p => p != null))
-            {
-                if (CustomCassieReader.Singleton != null)
-                {
-                    CustomCassieReader.Singleton.AudioPlayers = CassieAudioPlayers;
-                }
-
+                Logger.Error($"[CassieReplacement] Harmony patching failed: {ex}");
+                Disable();
                 return;
             }
 
-            InitSpeaker();
-            if (CassieAudioPlayers.Count == 0)
-            {
-                CassiePlayerGlobal = AudioPlayer.Create(SpeakerSettings.GloballyAudible with
-                {
-                    Volume = Config.GlobalSpeakerVolume > 0f ? Config.GlobalSpeakerVolume : 1f,
-                });
-                CassieAudioPlayers.Add(CassiePlayerGlobal);
-            }
+            ServerEvents.WaitingForPlayers += OnWaitingForPlayers;
+            ServerEvents.RoundStarted += OnRoundStarted;
+            ServerEvents.RoundRestarted += OnRoundRestarted;
 
-            if (CustomCassieReader.Singleton != null)
-            {
-                CustomCassieReader.Singleton.AudioPlayers = CassieAudioPlayers;
-            }
+            // Serwer mógł już wystartować (plugin włączony w trakcie działania) - zbuduj głośniki po chwili.
+            startupHandle = Timing.CallDelayed(StartupSpeakerDelaySeconds, () => Speakers?.EnsureReady());
         }
 
-        private bool ShouldHearGlobal(LabApi.Features.Wrappers.Player player)
-        {
-            if (player == null || player.IsHost || player.ReferenceHub == null)
-            {
-                if (player?.ReferenceHub != null)
-                {
-                    globalListenerHubs.Remove(player.ReferenceHub);
-                }
-
-                return false;
-            }
-
-            ReferenceHub hub = player.ReferenceHub;
-            if (!Config.UseSpatialSpeakers || !hub.TryGetCurrentRoom(out RoomIdentifier room) || (Config.GlobalForSurfaceOnly && room.Zone == FacilityZone.Surface))
-            {
-                if (!globalListenerHubs.Contains(hub))
-                {
-                    globalListenerHubs.Add(hub);
-                }
-
-                return true;
-            }
-
-            IEnumerable<Scp079InteractableBase> speakers = allSpeakers.Where(s => LabApi.Features.Wrappers.Room.Get(s.Room) == LabApi.Features.Wrappers.Room.Get(room));
-            bool hearGlobal = speakers.IsEmpty() || speakers.Any(s => Vector3.Distance(hub.PlayerCameraReference.position, s.Position) >= Config.SpatialSpeakerMaxDistance);
-
-            if (hearGlobal && !globalListenerHubs.Contains(hub))
-            {
-                globalListenerHubs.Add(hub);
-            }
-            else if (!hearGlobal && globalListenerHubs.Contains(hub))
-            {
-                globalListenerHubs.Remove(hub);
-            }
-
-            return hearGlobal;
-        }
-
-        private void DestroySpeakers()
-        {
-            if (CassiePlayerGlobal != null)
-            {
-                CassiePlayerGlobal.Destroy();
-                CassiePlayerGlobal = null;
-            }
-
-            if (CassiePlayer != null)
-            {
-                CassiePlayer.Destroy();
-                CassiePlayer = null;
-            }
-
-            CassieAudioPlayers.Clear();
-            globalListenerHubs.Clear();
-        }
-
-#if EXILED
-        public override void OnEnabled()
-        {
-            base.OnEnabled();
-            cassieEventHandlers = new();
-            cassieEventHandlers.Register();
-#if CUSTOMITEM
-            CustomItem.RegisterItems();
-#endif
-#else
-        public override void Enable()
-        {
-#endif
-            Singleton = this;
-            CustomCassieReader.Singleton = new CustomCassieReader();
-            Patcher.DoPatching();
-
-            string audioDir = CassiePaths.DefaultAudioDirectory;
-            foreach (CassieDirectorySerializable configDir in Config.BaseDirectories)
-            {
-                if (string.IsNullOrWhiteSpace(configDir.Path)
-                    || configDir.Path.Equals("C:/test", StringComparison.OrdinalIgnoreCase)
-                    || configDir.Path.IndexOf(CassiePaths.Placeholder, StringComparison.OrdinalIgnoreCase) >= 0
-                    || configDir.Path.IndexOf("{exiled_config}", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    configDir.Path = audioDir;
-                }
-            }
-            if (!Config.BaseDirectories.Any(d => string.Equals(CassiePaths.Resolve(d.Path), audioDir, StringComparison.OrdinalIgnoreCase)))
-            {
-                Config.BaseDirectories.Insert(0, new CassieDirectorySerializable { Path = audioDir });
-            }
-
-            foreach (CassieDirectorySerializable configDir in Config.BaseDirectories)
-            {
-                CustomCassieReader.Singleton.ClipDatabase.RegisterFolder(configDir);
-            }
-
-            Timing.CallDelayed(2f, EnsureSpeakers);
-            Timing.CallDelayed(10f, () =>
-            {
-                Timing.RunCoroutine(CustomCassieReader.CassieCheck());
-            });
-
-            LabApi.Events.Handlers.ServerEvents.WaitingForPlayers += EnsureSpeakers;
-            LabApi.Events.Handlers.ServerEvents.RoundStarted += InitSpeaker;
-        }
-
-#if EXILED
-        public override void OnDisabled()
-        {
-            base.OnDisabled();
-            cassieEventHandlers.Unregister();
-            cassieEventHandlers = null;
-
-#if CUSTOMITEM
-            CustomItem.UnregisterItems();
-#endif
-#else
         public override void Disable()
         {
-#endif
-            Patcher.DoUnpatch();
-            LabApi.Events.Handlers.ServerEvents.WaitingForPlayers -= EnsureSpeakers;
-            LabApi.Events.Handlers.ServerEvents.RoundStarted -= InitSpeaker;
-            DestroySpeakers();
+            // FIX: wyrejestrowanie WSZYSTKICH eventów i zatrzymanie WSZYSTKICH coroutine (MEC).
+            ServerEvents.WaitingForPlayers -= OnWaitingForPlayers;
+            ServerEvents.RoundStarted -= OnRoundStarted;
+            ServerEvents.RoundRestarted -= OnRoundRestarted;
+
+            Timing.KillCoroutines(startupHandle);
+            Patcher.Remove();
+
+            CustomCassieReader.Singleton?.Dispose();
+            Speakers?.Dispose();
+            Speakers = null;
             Singleton = null;
-            CustomCassieReader.Singleton = null;
+        }
+
+        private const float StartupSpeakerDelaySeconds = 2f;
+
+        private void RegisterConfiguredClips()
+        {
+            CustomCassieReader reader = CustomCassieReader.Singleton;
+
+            // OPTYMALIZACJA: konfiguracji użytkownika nie mutujemy (poprzednio Enable() nadpisywał Config.BaseDirectories).
+            string defaultDirectory = CassiePaths.DefaultAudioDirectory;
+            bool defaultPresent = false;
+
+            foreach (CassieDirectorySerializable directory in Config.BaseDirectories)
+            {
+                if (directory == null)
+                {
+                    continue;
+                }
+
+                string resolved = CassiePaths.Resolve(directory.Path);
+                defaultPresent |= string.Equals(resolved, defaultDirectory, StringComparison.OrdinalIgnoreCase);
+                reader.ClipDatabase.RegisterFolder(directory, createIfMissing: true);
+            }
+
+            if (!defaultPresent)
+            {
+                reader.ClipDatabase.RegisterFolder(new CassieDirectorySerializable { Path = defaultDirectory }, createIfMissing: true);
+            }
+        }
+
+        private void OnWaitingForPlayers()
+        {
+            // FIX: stan między rundami - zawsze czyścimy kolejkę i budujemy głośniki od zera.
+            CustomCassieReader.Singleton?.CancelAll();
+            Speakers?.Rebuild();
+        }
+
+        private void OnRoundStarted()
+        {
+            // Pozycje głośników 079 mogą być znane dopiero po wygenerowaniu mapy - odśwież.
+            Speakers?.Rebuild();
+        }
+
+        private void OnRoundRestarted()
+        {
+            // FIX: po restarcie rundy stare AudioPlayery są niszczone przez grę - nie zostawiamy do nich referencji.
+            CustomCassieReader.Singleton?.CancelAll();
+            Speakers?.Destroy();
         }
     }
 }

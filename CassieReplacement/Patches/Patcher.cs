@@ -1,21 +1,38 @@
-﻿namespace CassieReplacement.Patches
+namespace CassieReplacement.Patches
 {
     using HarmonyLib;
 
     public static class Patcher
     {
-        private static Harmony HarmonyInstance { get; set; }
+        private const string HarmonyId = "me.icedchai.cassie.patch";
 
-        public static void DoPatching()
+        private static Harmony harmony;
+
+        /// <summary>Idempotentne. Przy błędzie (np. zmieniona sygnatura metody po aktualizacji gry) cofa już założone patche.</summary>
+        public static void Apply()
         {
-            HarmonyInstance = new Harmony("me.icedchai.cassie.patch");
-            HarmonyInstance.PatchAll(typeof(Patcher).Assembly);
+            if (harmony != null)
+            {
+                return;
+            }
+
+            harmony = new Harmony(HarmonyId);
+            try
+            {
+                harmony.PatchAll(typeof(Patcher).Assembly);
+            }
+            catch
+            {
+                Remove();
+                throw;
+            }
         }
 
-        public static void DoUnpatch()
+        public static void Remove()
         {
-            HarmonyInstance?.UnpatchAll("me.icedchai.cassie.patch");
-            HarmonyInstance = null;
+            // OPTYMALIZACJA: UnpatchSelf zamiast UnpatchAll(id) - zdejmuje wyłącznie nasze patche.
+            harmony?.UnpatchSelf();
+            harmony = null;
         }
     }
 }

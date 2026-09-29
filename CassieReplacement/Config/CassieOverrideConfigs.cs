@@ -1,10 +1,10 @@
-﻿namespace CassieReplacement.Config
+namespace CassieReplacement.Config
 {
+    using System.Collections.Generic;
+    using System.ComponentModel;
     using CassieReplacement.Reader;
     using CassieReplacement.Reader.Enums;
     using PlayerRoles;
-    using System.Collections.Generic;
-    using System.ComponentModel;
 
 #pragma warning disable SA1600
     public class CassieOverrideConfigs
@@ -37,6 +37,8 @@
 
         public Dictionary<RoleTypeId, CassieAnnouncement> ScpLookupTable { get; set; } = new Dictionary<RoleTypeId, CassieAnnouncement>
         {
+            // FIX: brakowało SCP-173 -> KeyNotFoundException w patchu przy śmierci 173.
+            { RoleTypeId.Scp173, new CassieAnnouncement("Scp 1 7 3", "SCP-173") },
             { RoleTypeId.Scp049, new CassieAnnouncement("Scp 0 4 9", "SCP-049") },
             { RoleTypeId.Scp0492, new CassieAnnouncement("Scp 0 4 9 2", "SCP-049-2") },
             { RoleTypeId.Scp096, new CassieAnnouncement("Scp 0 9 6", "SCP-096") },
@@ -49,28 +51,19 @@
         public Dictionary<CassieDamageType, CassieAnnouncement> DamageTypeTerminationAnnouncementLookupTable { get; set; } = new Dictionary<CassieDamageType, CassieAnnouncement>
         {
             { CassieDamageType.Tesla, new CassieAnnouncement(" SUCCESSFULLY TERMINATED BY AUTOMATIC SECURITY SYSTEM", "successfully terminated by automatic security system.") },
-
             { CassieDamageType.Warhead, new CassieAnnouncement(" SUCCESSFULLY TERMINATED BY alpha warhead", "successfully terminated by Alpha Warhead.") },
-
             { CassieDamageType.Decontamination, new CassieAnnouncement(" lost in decontamination sequence", "lost in decontamination sequence.") },
-
             { CassieDamageType.Player, new CassieAnnouncement(" Containedsuccessfully {team}", "contained successfully {team}.") },
-
             { CassieDamageType.Unknown, new CassieAnnouncement(" SUCCESSFULLY TERMINATED . TERMINATION CAUSE UNSPECIFIED", "successfully terminated. Termination cause unspecified.") },
         };
 
         public Dictionary<Team, CassieAnnouncement> TeamTerminationCallsignLookupTable { get; set; } = new Dictionary<Team, CassieAnnouncement>
         {
             { Team.ClassD, new CassieAnnouncement(" BY CLASSD PERSONNEL", "by Class-D personnel") },
-
             { Team.ChaosInsurgency, new CassieAnnouncement(" BY CHAOSINSURGENCY", "by Chaos Insurgency") },
-
             { Team.Scientists, new CassieAnnouncement(" BY SCIENCE PERSONNEL", "by Science Personnel") },
-
             { Team.FoundationForces, new CassieAnnouncement(" CONTAINMENTUNIT {letter} {number}", "-- Containment Unit {letter}-{number}") },
-
             { Team.OtherAlive, new CassieAnnouncement(" BY UNKNOWN PERSONNEL", "by unknown personnel") },
-
             { Team.SCPs, new CassieAnnouncement(" BY {scpkiller}", "by {scpkiller}") },
         };
     }

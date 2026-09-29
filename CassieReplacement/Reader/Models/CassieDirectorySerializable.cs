@@ -1,8 +1,6 @@
 namespace CassieReplacement.Reader.Models
 {
-    using System;
-
-    [Serializable]
+    // Nazwy właściwości muszą zostać - to klucze w YAML użytkowników.
     public class CassieDirectorySerializable
     {
         public string Path { get; set; } = "{labapi_configs}/CASSIE Replacement";

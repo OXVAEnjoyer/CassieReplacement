@@ -1,4 +1,3 @@
-﻿#if !EXILED
 namespace CassieReplacement.Patches
 {
     using HarmonyLib;
@@ -9,31 +8,30 @@ namespace CassieReplacement.Patches
     [HarmonyPatch(typeof(Cassie.CassieAnnouncementDispatcher), nameof(Cassie.CassieAnnouncementDispatcher.PlayNewAnnouncement))]
     public static class WaveAnnouncementSendPatch
     {
+        [HarmonyPrefix]
         public static bool Prefix(Cassie.CassieAnnouncement annc)
         {
-            Cassie.CassieWaveAnnouncement wave = annc as Cassie.CassieWaveAnnouncement;
-            if (wave == null || !Plugin.Singleton.Config.CassieOverrideConfig.ShouldOverrideAnnouncements)
+            if (annc is not Cassie.CassieWaveAnnouncement wave
+                || Plugin.Singleton?.Config?.CassieOverrideConfig.ShouldOverrideAnnouncements != true)
             {
                 return true;
             }
 
             string unitLetter = string.Empty;
             int unitNumber = 0;
-            UnitNamingRule rule;
-            if (NamingRulesManager.TryGetNamingRule(Team.FoundationForces, out rule) && !string.IsNullOrEmpty(rule.LastGeneratedName) && rule.LastGeneratedName.Contains("-"))
+            if (NamingRulesManager.TryGetNamingRule(Team.FoundationForces, out UnitNamingRule rule))
             {
-                string[] parts = rule.LastGeneratedName.Split('-');
-                unitLetter = parts[0];
-                int.TryParse(parts[1], out unitNumber);
+                // DRY: wspólny parser nazwy jednostki (poprzednio Split('-') + parts[1] powielone z handlera śmierci).
+                CassieUnit.TryParse(rule.LastGeneratedName, out unitLetter, out unitNumber);
             }
 
-            bool mini = wave.Wave is NtfMiniWave || wave.Wave is ChaosMiniWave;
+            bool isMini = wave.Wave is NtfMiniWave || wave.Wave is ChaosMiniWave;
             Faction faction = wave.Wave is ChaosSpawnWave || wave.Wave is ChaosMiniWave
                 ? Faction.FoundationEnemy
                 : Faction.FoundationStaff;
-            CassieEventHandlers.HandleAnnouncingWaveEntrance(faction, mini, unitLetter, unitNumber);
+
+            CassieEventHandlers.HandleAnnouncingWaveEntrance(faction, isMini, unitLetter, unitNumber);
             return false;
         }
     }
 }
-#endif

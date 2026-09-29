@@ -1,41 +1,38 @@
 namespace CassieReplacement.Reader.Models
 {
-    using NVorbis;
+    using System;
     using System.IO;
+    using NVorbis;
 
-    public class CassieClip
+    public sealed class CassieClip
     {
         public CassieClip(FileInfo file, float reverb = 0f, string prefix = "", bool shouldList = false)
         {
-            VorbisReader vorbisReader = new(file.FullName);
-            FileInfo = file;
+            FileInfo = file ?? throw new ArgumentNullException(nameof(file));
             Reverb = reverb;
-            Name = Path.GetFileNameWithoutExtension(file.FullName).ToLower().Replace(' ', '_');
-            Name = $"{prefix}{Name}";
-            BaseLength = (float)vorbisReader.TotalTime.TotalSeconds;
             ShouldList = shouldList;
-            vorbisReader.Dispose();
+
+            // FIX: prefiks też normalizowany do małych liter (wyszukiwanie klipów jest lowercase - "Sam_" nigdy nie pasowało).
+            Name = (prefix ?? string.Empty).ToLowerInvariant()
+                   + Path.GetFileNameWithoutExtension(file.Name).ToLowerInvariant().Replace(' ', '_');
+
+            // FIX: using -> uchwyt pliku zwalniany także przy wyjątku (blokada pliku na Windows).
+            using (VorbisReader vorbisReader = new VorbisReader(file.FullName))
+            {
+                BaseLength = (float)vorbisReader.TotalTime.TotalSeconds;
+            }
         }
 
-        public CassieClip(string name, FileInfo fileInfo, float baseLength, float reverb = 0f, bool shouldList = false)
-        {
-            Reverb = reverb;
-            BaseLength = baseLength;
-            Name = name;
-            FileInfo = fileInfo;
-            ShouldList = shouldList;
-        }
+        public string Name { get; internal set; }
 
-        public bool ShouldList { get; set; } = false;
+        public FileInfo FileInfo { get; }
 
-        public float Reverb { get; set; } = 0f;
+        public float BaseLength { get; }
 
-        public float BaseLength { get; set; }
+        public float Reverb { get; }
 
-        public float Length => BaseLength - Reverb > 0 ? BaseLength - Reverb : 0f;
+        public bool ShouldList { get; }
 
-        public string Name { get; set; }
-
-        public FileInfo FileInfo { get; set; }
+        public float Length => Math.Max(0f, BaseLength - Reverb);
     }
 }

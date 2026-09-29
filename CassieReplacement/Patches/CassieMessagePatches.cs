@@ -1,15 +1,23 @@
 namespace CassieReplacement.Patches
 {
+    using System;
+    using System.Collections.Generic;
+    using System.Text;
     using CassieReplacement.Reader;
     using HarmonyLib;
     using NorthwoodLib.Pools;
-    using System;
-    using System.Collections.Generic;
-    using System.Linq;
-    using System.Text;
 
     public static class CassieIntercept
     {
+        private const string NoParseToken = "noparse";
+        private const string NoCassieToken = "nocassie";
+        private const string SizeZeroTag = "<size=0>";
+        private const string SizeSplitTag = "</size><split>";
+        private const string SplitTag = "<split>";
+        private const string DefaultPrefix = "customcassie";
+
+        private static readonly char[] WordSeparators = { ' ' };
+
         public static bool TryTakeOver(string words, bool makeNoise, bool customAnnouncement)
         {
             if (string.IsNullOrWhiteSpace(words))
@@ -17,94 +25,123 @@ namespace CassieReplacement.Patches
                 return false;
             }
 
-            if (ContainsToken(words, "noparse"))
+            // Ścieżka wywoływana dla KAŻDEGO komunikatu gry - najpierw najtańsze wyjścia.
+            if (ContainsToken(words, NoParseToken))
             {
                 return false;
             }
 
-            if (Plugin.Singleton?.Config == null || CustomCassieReader.Singleton == null)
+            Plugin plugin = Plugin.Singleton;
+            CustomCassieReader reader = CustomCassieReader.Singleton;
+            if (plugin?.Config == null || reader == null)
             {
                 return false;
             }
 
-            string prefix = Plugin.Singleton.Config.CustomCassiePrefix ?? "customcassie";
-            bool overrideAll = Plugin.Singleton.Config.CassieOverrideConfig.ShouldOverrideAll;
-            bool hasPrefix = ContainsToken(words, prefix)
-                || words.TrimStart().StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+            string prefix = plugin.Config.CustomCassiePrefix ?? DefaultPrefix;
 
-            if (!hasPrefix && !overrideAll)
+            // OPTYMALIZACJA: ContainsToken nie alokuje (poprzednio 3x Split z nową tablicą separatorów na komunikat).
+            // Zmiana zachowania: usunięty dodatkowy StartsWith(prefix) - dopasowywał także słowa typu "customcassiefoo".
+            bool hasPrefix = ContainsToken(words, prefix);
+            if (!hasPrefix && !plugin.Config.CassieOverrideConfig.ShouldOverrideAll)
             {
                 return false;
             }
 
-            bool useCassie = !ContainsToken(words, "nocassie");
+            bool useCassie = !ContainsToken(words, NoCassieToken);
 
-            if (words.IndexOf("<size=0>", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (words.IndexOf(SizeZeroTag, StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                HandleSized(words, prefix, hasPrefix, makeNoise, customAnnouncement, useCassie);
+                HandleSized(reader, words, prefix, hasPrefix, makeNoise, customAnnouncement, useCassie);
                 return true;
             }
-            string[] wordsplit = words.Split(new[] { ';' }, 2);
-            List<string> input = wordsplit[0]
-                .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(w => w.ToLowerInvariant())
-                .ToList();
 
-            input.RemoveAll(w =>
-                w.Equals(prefix, StringComparison.OrdinalIgnoreCase)
-                || w.Equals("nocassie", StringComparison.OrdinalIgnoreCase));
+            string[] wordSplit = words.Split(new[] { ';' }, 2);
+            List<string> input = new List<string>();
+            foreach (string word in wordSplit[0].Split(WordSeparators, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (!word.Equals(prefix, StringComparison.OrdinalIgnoreCase)
+                    && !word.Equals(NoCassieToken, StringComparison.OrdinalIgnoreCase))
+                {
+                    input.Add(word);
+                }
+            }
 
-            string subtitles = wordsplit.Length > 1 ? wordsplit[1].Trim() : string.Empty;
-
-            Plugin.Singleton.EnsureSpeakers();
-            CustomCassieReader.Singleton.CassieReadMessage(input, makeNoise, customAnnouncement, subtitles, useCassie);
+            string subtitles = wordSplit.Length > 1 ? wordSplit[1].Trim() : string.Empty;
+            reader.CassieReadMessage(input, makeNoise, customAnnouncement, subtitles, useCassie);
             return true;
         }
 
-        private static void HandleSized(string words, string prefix, bool hasPrefix, bool makeNoise, bool customAnnouncement, bool useCassie)
+        private static void HandleSized(CustomCassieReader reader, string words, string prefix, bool hasPrefix, bool makeNoise, bool customAnnouncement, bool useCassie)
         {
-            string[] dividedBySplits = words.Split(new[] { "</size><split>" }, StringSplitOptions.None);
+            string[] sections = words.Split(new[] { SizeSplitTag }, StringSplitOptions.None);
 
-            if (hasPrefix && dividedBySplits.Length > 0)
+            if (hasPrefix && sections.Length > 0)
             {
-                string[] head = dividedBySplits[0].Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                dividedBySplits[0] = string.Join(
-                    " ",
-                    head.Where(w => !w.Equals(prefix, StringComparison.OrdinalIgnoreCase)));
+                List<string> head = new List<string>();
+                foreach (string word in sections[0].Split(WordSeparators, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (!word.Equals(prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        head.Add(word);
+                    }
+                }
+
+                sections[0] = string.Join(" ", head);
             }
 
             StringBuilder subtitles = StringBuilderPool.Shared.Rent();
             StringBuilder input = StringBuilderPool.Shared.Rent();
+            string inputText;
+            string subtitleText;
 
-            for (int i = 0; i < dividedBySplits.Length; i++)
+            try
             {
-                string section = dividedBySplits[i];
-                if (string.IsNullOrWhiteSpace(section))
+                bool appendedAny = false;
+                foreach (string section in sections)
                 {
-                    continue;
+                    if (string.IsNullOrWhiteSpace(section))
+                    {
+                        continue;
+                    }
+
+                    // FIX (do weryfikacji w grze): oryginał dodawał <split> warunkiem 'i < Length - 2', co gubiło separator przed
+                    // ostatnią sekcją i nie uwzględniało pominiętych pustych sekcji. Teraz separator jest między KAŻDĄ parą sekcji.
+                    if (appendedAny)
+                    {
+                        subtitles.Append(SplitTag);
+                        input.Append(SplitTag);
+                    }
+
+                    string[] bySize = section.Split(new[] { SizeZeroTag }, StringSplitOptions.None);
+                    subtitles.Append(bySize[0]);
+                    if (bySize.Length > 1)
+                    {
+                        // Ostatnia sekcja zachowuje końcowe </size> - nie może trafić do słów jako "słowo".
+                        input.Append(bySize[1].Replace("</size>", string.Empty));
+                    }
+
+                    appendedAny = true;
                 }
 
-                string[] dividedBySize = section.Split(new[] { "<size=0>" }, StringSplitOptions.None);
-                subtitles.Append(dividedBySize[0]);
-                input.Append(dividedBySize.TryGet(1, out string input1) ? input1 : string.Empty);
-                if (i < dividedBySplits.Length - 2)
-                {
-                    subtitles.Append("<split>");
-                    input.Append("<split>");
-                }
+                inputText = input.ToString();
+                subtitleText = subtitles.ToString();
+            }
+            finally
+            {
+                StringBuilderPool.Shared.Return(input);
+                StringBuilderPool.Shared.Return(subtitles);
             }
 
-            Plugin.Singleton.EnsureSpeakers();
-            CustomCassieReader.Singleton.CassieReadMessage(
-                input.ToString().ToLowerInvariant().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).ToList(),
+            reader.CassieReadMessage(
+                inputText.Split(WordSeparators, StringSplitOptions.RemoveEmptyEntries),
                 makeNoise,
                 customAnnouncement,
-                subtitles.ToString(),
+                subtitleText,
                 useCassie);
-            StringBuilderPool.Shared.Return(input);
-            StringBuilderPool.Shared.Return(subtitles);
         }
 
+        /// <summary>Bezalokacyjne sprawdzenie, czy 'words' zawiera token (rozdzielany spacją lub ';') równy 'token' bez względu na wielkość liter.</summary>
         private static bool ContainsToken(string words, string token)
         {
             if (string.IsNullOrEmpty(words) || string.IsNullOrEmpty(token))
@@ -112,16 +149,32 @@ namespace CassieReplacement.Patches
                 return false;
             }
 
-            foreach (string part in words.Split(new[] { ' ', ';' }, StringSplitOptions.RemoveEmptyEntries))
+            int start = 0;
+            while (start < words.Length)
             {
-                if (part.Equals(token, StringComparison.OrdinalIgnoreCase))
+                while (start < words.Length && IsSeparator(words[start]))
+                {
+                    start++;
+                }
+
+                int end = start;
+                while (end < words.Length && !IsSeparator(words[end]))
+                {
+                    end++;
+                }
+
+                if (end - start == token.Length && string.Compare(words, start, token, 0, token.Length, StringComparison.OrdinalIgnoreCase) == 0)
                 {
                     return true;
                 }
+
+                start = end;
             }
 
             return false;
         }
+
+        private static bool IsSeparator(char c) => c == ' ' || c == ';';
     }
 
     [HarmonyPatch(typeof(Cassie.CassieAnnouncementDispatcher), nameof(Cassie.CassieAnnouncementDispatcher.AddToQueue))]
@@ -152,6 +205,8 @@ namespace CassieReplacement.Patches
     [HarmonyPatch(typeof(Cassie.CassieTtsAnnouncer), nameof(Cassie.CassieTtsAnnouncer.TryPlay))]
     public static class CassieTryPlayPatch
     {
+        private const float PlaceholderDurationSeconds = 0.05f;
+
         [HarmonyPrefix]
         public static bool Prefix(Cassie.CassieTtsPayload tts, ref float totalDuration, ref bool __result)
         {
@@ -163,7 +218,7 @@ namespace CassieReplacement.Patches
                 return true;
             }
 
-            totalDuration = 0.05f;
+            totalDuration = PlaceholderDurationSeconds;
             __result = true;
             return false;
         }

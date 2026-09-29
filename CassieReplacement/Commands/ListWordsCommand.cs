@@ -1,33 +1,31 @@
 namespace CassieReplacement.Commands
 {
+    using System;
     using CassieReplacement.Reader;
     using CommandSystem;
-    using System;
 
     [CommandHandler(typeof(RemoteAdminCommandHandler))]
     public class ListWordsCommand : ICommand
     {
         public string Command => "listwords";
 
-        public string[] Aliases => new string[] { "listwords" };
+        // FIX: alias identyczny z nazwą komendy był zbędny.
+        public string[] Aliases { get; } = Array.Empty<string>();
 
         public string Description => "Lists all registered CUSTOMCASSIE words.";
 
         public bool Execute(ArraySegment<string> arguments, ICommandSender sender, out string response)
         {
-            if (arguments.Count != 0)
+            CustomCassieReader reader = CustomCassieReader.Singleton;
+            if (reader == null)
             {
-                response = $"{NineTailedFoxAnnouncer.singleton.CalculateDuration(arguments.At(0))}";
-                return true;
+                response = "CASSIE Replacement is not enabled.";
+                return false;
             }
 
-            string words = "The available words are:\n";
-            foreach (string word in CustomCassieReader.Singleton.ClipDatabase.ListableClipNames)
-            {
-                words += $"{word}, ";
-            }
-
-            response = words;
+            // Usunięto ukrytą funkcję debugową (listwords <słowo> zwracało szacowany czas trwania) - nie była opisana nigdzie.
+            // OPTYMALIZACJA: string.Join zamiast konkatenacji w pętli.
+            response = "The available words are:\n" + string.Join(", ", reader.ClipDatabase.GetListableClipNames());
             return true;
         }
     }
