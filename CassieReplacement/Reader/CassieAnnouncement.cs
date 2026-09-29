@@ -1,0 +1,121 @@
+namespace CassieReplacement.Reader
+{
+    using CassieReplacement;
+    using CassieReplacement.Config;
+#if EXILED
+    using Exiled.API.Features;
+#endif
+    using NorthwoodLib.Pools;
+    using PlayerRoles;
+    using Respawning;
+    using System.Linq;
+    using System.Text;
+    using YamlDotNet.Serialization;
+
+#pragma warning disable SA1600
+    public class CassieAnnouncement
+    {
+        public static CassieAnnouncement operator +(CassieAnnouncement left, CassieAnnouncement right)
+        {
+            return new CassieAnnouncement($"{left.Words} {right.Words}", $"{left.Translation} {right.Translation}");
+        }
+
+        private static CassieOverrideConfigs Config => Plugin.Singleton.Config.CassieOverrideConfig;
+
+        private static int ScpsLeft => ReferenceHub.AllHubs.Where(hub => hub.IsSCP(includeZombies: false)).Count();
+
+        private static int PlayersLeft(Team team) => ReferenceHub.AllHubs.Where(hub => hub.GetTeam() == team).Count();
+
+        public CassieAnnouncement Replace(string oldText, CassieAnnouncement newText)
+        {
+            return new CassieAnnouncement(Words.Replace(oldText, newText.Words), Translation.Replace(oldText, newText.Translation));
+        }
+
+        public CassieAnnouncement Replace(string oldText, string newText)
+        {
+            return new CassieAnnouncement(Words.Replace(oldText, newText), Translation.Replace(oldText, newText));
+        }
+
+        public CassieAnnouncement(string words, string translation = "")
+        {
+            Words = words;
+            Translation = translation;
+        }
+
+        public void ReplaceVoid(string oldText, string newText)
+        {
+            Words = Words.Replace(oldText, newText);
+            Translation = Translation.Replace(oldText, newText);
+        }
+
+        public void ReplaceVoid(string oldText, CassieAnnouncement newText)
+        {
+            Words = Words.Replace(oldText, newText.Words);
+            Translation = Translation.Replace(oldText, newText.Translation);
+        }
+
+        public CassieAnnouncement GenericReplacement()
+        {
+            return new CassieAnnouncement(Words, Translation)
+                .Replace("{threatoverview}", ScpsLeft == 0 ? Config.ThreatOverviewNoScps : ScpsLeft == 1 ? Config.ThreatOverviewOneScp : Config.ThreatOverviewScps)
+                .Replace("{scps}", ScpsLeft.ToString())
+                .Replace("{classds}", PlayersLeft(Team.ClassD).ToString())
+                .Replace("{scientists}", PlayersLeft(Team.Scientists).ToString())
+                .Replace("{foundationforces}", PlayersLeft(Team.FoundationForces).ToString())
+                .Replace("{chaosinsurgencys}", PlayersLeft(Team.ChaosInsurgency).ToString())
+                .Replace("{flamingos}", PlayersLeft(Team.Flamingos).ToString());
+        }
+
+        public CassieAnnouncement()
+        {
+        }
+
+        private string words;
+
+        private string translation;
+
+        public bool IsNoisy { get; set; } = true;
+
+        public string Words
+        {
+            get => words;
+            set => words = value.ToLower();
+        }
+
+        public string Translation
+        {
+            get => translation;
+            set => translation = value;
+        }
+
+        [YamlIgnore]
+        public bool IsCustomMessage => Words.StartsWith(Plugin.Singleton.Config.CustomCassiePrefix);
+
+        public void Announce(bool isHeld = false, bool? isNoisy = null, bool isSubtitles = true)
+        {
+            bool playNoise = IsNoisy;
+            if (isNoisy != null)
+            {
+                playNoise = !(bool)isNoisy;
+            }
+
+            CassieAnnouncement processed = GenericReplacement();
+            Words = processed.Words;
+            Translation = processed.Translation;
+
+            if (string.IsNullOrWhiteSpace(Words))
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(Translation))
+            {
+                CassiePlayback.Play(Words, isHeld, playNoise, isSubtitles);
+            }
+            else
+            {
+                CassiePlayback.Play(Words, isHeld, playNoise, isSubtitles, Translation);
+            }
+        }
+    }
+}

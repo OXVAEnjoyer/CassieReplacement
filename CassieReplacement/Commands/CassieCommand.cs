@@ -39,7 +39,7 @@ namespace CassieReplacement.Commands
 
             string text = RAUtils.FormatArguments(arguments, 0);
             ServerLogs.AddLog(ServerLogs.Modules.Administrative, sender.LogName + " started a cassie announcement: " + text + ".", ServerLogs.ServerLogType.RemoteAdminActivity_GameChanging);
-            RespawnEffectsController.PlayCassieAnnouncement(text, makeHold: false, makeNoise: true, customAnnouncement: true);
+            CassiePlayback.Play(text, false, true, true);
             response = "Announcement sent!";
             return true;
         }

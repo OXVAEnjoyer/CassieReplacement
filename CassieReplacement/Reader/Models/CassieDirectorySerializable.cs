@@ -1,14 +1,11 @@
-﻿namespace CassieReplacement.Reader.Models
+namespace CassieReplacement.Reader.Models
 {
     using System;
 
-    /// <summary>
-    /// Describes a directory serializable.
-    /// </summary>
     [Serializable]
     public class CassieDirectorySerializable
     {
-        public string Path { get; set; } = "C:/test";
+        public string Path { get; set; } = "{labapi_configs}/CASSIE Replacement";
 
         public string Prefix { get; set; } = string.Empty;
 

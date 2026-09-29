@@ -1,16 +1,10 @@
-﻿namespace CassieReplacement.Reader.Models
+namespace CassieReplacement.Reader.Models
 {
     using NVorbis;
     using System.IO;
 
     public class CassieClip
     {
-        /// <summary>
-        /// Initializes a new instance of the <see cref="CassieClip"/> class.
-        /// </summary>
-        /// <param name="file">The FileInfo.</param>
-        /// <param name="reverb">The amount to subtract from the length of the clip.</param>
-        /// <param name="prefix">The prefix to add to the name.</param>
         public CassieClip(FileInfo file, float reverb = 0f, string prefix = "", bool shouldList = false)
         {
             VorbisReader vorbisReader = new(file.FullName);

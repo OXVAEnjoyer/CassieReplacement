@@ -1,4 +1,4 @@
-﻿using CassieReplacement.Reader;
+using CassieReplacement.Reader;
 using CassieReplacement.Reader.Models;
 using CommandSystem;
 using System;
@@ -9,20 +9,15 @@ using System.Threading.Tasks;
 
 namespace CassieReplacement.Commands
 {
-    /// <inheritdoc/>
     [CommandHandler(typeof(RemoteAdminCommandHandler))]
     public class RegisterFolderCassieCommand : ICommand
     {
-        /// <inheritdoc/>
         public string Command => "registercassie";
 
-        /// <inheritdoc/>
         public string[] Aliases => new string[] { "customcassieregister", "registercc", "register" };
 
-        /// <inheritdoc/>
         public string Description => "Registers a specific folder of CASSIE lines. (usage: register (path) (bleed) (prefix)";
 
-        /// <inheritdoc/>w
         public bool Execute(ArraySegment<string> arguments, ICommandSender sender, out string response)
         {
             if (arguments.Count == 0)
@@ -31,7 +26,7 @@ namespace CassieReplacement.Commands
                 return false;
             }
 
-            string path = arguments.At(0);
+            string path = CassiePaths.Resolve(arguments.At(0));
             float bleedTime = 0f;
             float.TryParse(arguments.Count > 1 ? arguments.At(1) : "0", out bleedTime);
             string prefix = arguments.Count > 2 ? arguments.At(2) : string.Empty;

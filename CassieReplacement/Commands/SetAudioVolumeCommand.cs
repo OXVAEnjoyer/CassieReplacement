@@ -1,4 +1,4 @@
-﻿namespace CassieReplacement.Commands
+namespace CassieReplacement.Commands
 {
     using CassieReplacement.Reader;
     using CommandSystem;
@@ -6,22 +6,15 @@
     using System.Collections.Generic;
     using System.Linq;
 
-    /// <summary>
-    /// The command used to invoke <see cref="CustomCassieReader.ReadMessage(List{string})(System.Collections.Generic.List{string})"/> in-game.
-    /// </summary>
     [CommandHandler(typeof(RemoteAdminCommandHandler))]
     public class SetAudioVolumeCommand : ICommand
     {
-        /// <inheritdoc/>
         public string Command => "customcassievolume";
 
-        /// <inheritdoc/>
         public string[] Aliases => new string[] { "cassievolume", "ccassievolume", "ccvolume" };
 
-        /// <inheritdoc/>
         public string Description => "Sets the volume of the custom CASSIE speakers.";
 
-        /// <inheritdoc/>
         public bool Execute(ArraySegment<string> arguments, ICommandSender sender, out string response)
         {
             List<string> words = arguments.ToList();

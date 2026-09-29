@@ -1,4 +1,4 @@
-﻿using CassieReplacement.Reader;
+using CassieReplacement.Reader;
 using CommandSystem;
 using LabApi.Features.Wrappers;
 using MEC;
@@ -10,28 +10,20 @@ using System.Threading.Tasks;
 
 namespace CassieReplacement.Commands
 {
-    /// <inheritdoc/>
     [CommandHandler(typeof(RemoteAdminCommandHandler))]
     public class ClearCustomCassieCommand : ICommand
     {
-        /// <inheritdoc/>
         public string Command => "clearcustomcassie";
 
-        /// <inheritdoc/>
         public string[] Aliases => new string[] { "customcassieclear", "clearcc", "clearcustom" };
 
-        /// <inheritdoc/>
         public string Description => "Clears custom CASSIE lines.";
 
-        /// <inheritdoc/>
         public bool Execute(ArraySegment<string> arguments, ICommandSender sender, out string response)
         {
-            LabApi.Features.Wrappers.Cassie.Clear();
+            global::Cassie.CassieAnnouncementDispatcher.ClearAll();
             CustomCassieReader.Singleton.TimeBeforeWhichToPause = DateTime.Now;
-            foreach (var audioPlayer in CustomCassieReader.Singleton.AudioPlayers)
-            {
-                audioPlayer.RemoveAllClips();
-            }
+            CustomCassieReader.Singleton.StopAllPlayback();
 
             response = "Cleared cassie.";
             return true;

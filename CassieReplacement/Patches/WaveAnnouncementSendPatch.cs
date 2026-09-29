@@ -1,61 +1,38 @@
 ﻿#if !EXILED
 namespace CassieReplacement.Patches
 {
-    using System;
-    using System.Collections.Generic;
-    using System.Linq;
-    using System.Reflection;
-    using System.Text;
-    using System.Threading.Tasks;
     using HarmonyLib;
-    using Respawning.Announcements;
+    using PlayerRoles;
     using Respawning.NamingRules;
     using Respawning.Waves;
 
-    [HarmonyPatch]
+    [HarmonyPatch(typeof(Cassie.CassieAnnouncementDispatcher), nameof(Cassie.CassieAnnouncementDispatcher.PlayNewAnnouncement))]
     public static class WaveAnnouncementSendPatch
     {
-        public static bool Prefix(WaveAnnouncementBase __instance)
+        public static bool Prefix(Cassie.CassieAnnouncement annc)
         {
-            if (!Plugin.Singleton.Config.CassieOverrideConfig.ShouldOverrideAnnouncements)
+            Cassie.CassieWaveAnnouncement wave = annc as Cassie.CassieWaveAnnouncement;
+            if (wave == null || !Plugin.Singleton.Config.CassieOverrideConfig.ShouldOverrideAnnouncements)
             {
                 return true;
             }
 
             string unitLetter = string.Empty;
             int unitNumber = 0;
-            if (NamingRulesManager.TryGetNamingRule(PlayerRoles.Team.FoundationForces, out var rule))
+            UnitNamingRule rule;
+            if (NamingRulesManager.TryGetNamingRule(Team.FoundationForces, out rule) && !string.IsNullOrEmpty(rule.LastGeneratedName) && rule.LastGeneratedName.Contains("-"))
             {
-                unitLetter = rule.LastGeneratedName.Split('-')[0];
-                unitNumber = int.Parse(rule.LastGeneratedName.Split('-')[1]);
+                string[] parts = rule.LastGeneratedName.Split('-');
+                unitLetter = parts[0];
+                int.TryParse(parts[1], out unitNumber);
             }
 
-            switch (__instance)
-            {
-                case NtfWaveAnnouncement:
-                    CassieEventHandlers.HandleAnnouncingWaveEntrance(PlayerRoles.Faction.FoundationStaff, false, unitLetter, unitNumber);
-                    break;
-                case ChaosWaveAnnouncement:
-                    CassieEventHandlers.HandleAnnouncingWaveEntrance(PlayerRoles.Faction.FoundationEnemy, false, unitLetter, unitNumber);
-                    break;
-                case NtfMiniwaveAnnouncement:
-                    CassieEventHandlers.HandleAnnouncingWaveEntrance(PlayerRoles.Faction.FoundationStaff, true, unitLetter, unitNumber);
-                    break;
-                case ChaosMiniwaveAnnouncement:
-                    CassieEventHandlers.HandleAnnouncingWaveEntrance(PlayerRoles.Faction.FoundationEnemy, true, unitLetter, unitNumber);
-                    break;
-            }
-
+            bool mini = wave.Wave is NtfMiniWave || wave.Wave is ChaosMiniWave;
+            Faction faction = wave.Wave is ChaosSpawnWave || wave.Wave is ChaosMiniWave
+                ? Faction.FoundationEnemy
+                : Faction.FoundationStaff;
+            CassieEventHandlers.HandleAnnouncingWaveEntrance(faction, mini, unitLetter, unitNumber);
             return false;
-        }
-
-        public static IEnumerable<MethodBase> TargetMethods()
-        {
-            string playAnnouncement = nameof(WaveAnnouncementBase.PlayAnnouncement);
-            yield return typeof(NtfWaveAnnouncement).GetMethod(playAnnouncement);
-            yield return typeof(NtfMiniwaveAnnouncement).GetMethod(playAnnouncement);
-            yield return typeof(ChaosWaveAnnouncement).GetMethod(playAnnouncement);
-            yield return typeof(ChaosMiniwaveAnnouncement).GetMethod(playAnnouncement);
         }
     }
 }
