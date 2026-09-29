@@ -10,7 +10,6 @@ namespace CassieReplacement.Audio
     using SecretLabNAudio.Core.Extensions;
     using UnityEngine;
 
-    /// <summary>Owns every audio player used to voice CASSIE and decides who hears which speaker.</summary>
     public sealed class SpeakerManager : IDisposable
     {
         private readonly Plugin plugin;
@@ -19,7 +18,6 @@ namespace CassieReplacement.Audio
 
         private readonly Dictionary<RoomIdentifier, List<Vector3>> speakersByRoom = new Dictionary<RoomIdentifier, List<Vector3>>();
 
-        // The send-engine filters run for every listener and every audio packet, so the result is cached per frame.
         private readonly Dictionary<ReferenceHub, bool> rangeCache = new Dictionary<ReferenceHub, bool>();
 
         private int rangeCacheFrame = -1;
@@ -180,7 +178,6 @@ namespace CassieReplacement.Audio
             return positions;
         }
 
-        // True when the listener is within reach of a spatial speaker in their room, false when the global speaker should be used.
         private bool IsInSpatialRange(ReferenceHub hub)
         {
             int frame = Time.frameCount;

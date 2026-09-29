@@ -29,10 +29,8 @@ namespace CassieReplacement.Reader
 
         public StepKind Kind { get; }
 
-        /// <summary>Word including any active prefix and suffix.</summary>
         public string Name { get; }
 
-        /// <summary>Null when no clip is registered; the word is then replaced by an estimated pause.</summary>
         public CassieClip Clip { get; }
 
         public float Pitch { get; }
@@ -48,7 +46,6 @@ namespace CassieReplacement.Reader
     {
         public List<CassieStep> Steps { get; } = new List<CassieStep>();
 
-        /// <summary>Text handed to the base-game CASSIE, or null when the base game should stay silent.</summary>
         public string BaseAnnouncement { get; set; }
 
         public string Subtitle { get; set; } = string.Empty;
@@ -159,7 +156,6 @@ namespace CassieReplacement.Reader
             }
         }
 
-        // The base game gets silent "dots" as long as the clip, so its subtitles and noise run in parallel with the custom voice.
         private static void AppendWord(StringBuilder builder, CassieConfig config, string lookupName, string word, CassieClip clip, float pitch)
         {
             bool hasOverride = config.WordsToBasegameOverride.TryGetValue(lookupName, out string overrideWord);

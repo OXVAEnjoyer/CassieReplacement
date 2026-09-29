@@ -19,7 +19,6 @@ namespace CassieReplacement.Patches
 
         private static readonly char[] WordSeparators = { ' ' };
 
-        /// <summary>Takes over an announcement that carries the custom prefix (or every one, when configured). Returns false to leave it to the base game.</summary>
         public static bool TryTakeOver(string words, bool makeNoise, bool customAnnouncement)
         {
             if (string.IsNullOrWhiteSpace(words) || ContainsToken(words, NoParseToken))
@@ -65,7 +64,6 @@ namespace CassieReplacement.Patches
             return true;
         }
 
-        // Sized announcements look like: subtitle<size=0>words</size><split>subtitle<size=0>words</size>
         private static void HandleSized(CustomCassieReader reader, string words, string prefix, bool hasPrefix, bool makeNoise, bool customAnnouncement, bool useCassie)
         {
             string[] sections = words.Split(new[] { SizeSplitTag }, StringSplitOptions.None);
@@ -132,7 +130,6 @@ namespace CassieReplacement.Patches
                 useCassie);
         }
 
-        // Runs for every announcement in the game, so it scans the text in place instead of splitting it.
         private static bool ContainsToken(string words, string token)
         {
             if (string.IsNullOrEmpty(token))

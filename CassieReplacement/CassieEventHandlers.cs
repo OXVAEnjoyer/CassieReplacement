@@ -57,7 +57,6 @@ namespace CassieReplacement
                 : new CassieAnnouncement();
             CassieAnnouncement scpKiller = attackerTeam == Team.SCPs ? ResolveScp(config, attackerRole) : new CassieAnnouncement();
 
-            // Order matters: {deathcause} introduces {team}, and {team} introduces {scpkiller}, {letter} and {number}.
             config.ScpTerminationAnnouncement.GenericReplacement()
                 .Replace("{scp}", ResolveScp(config, victimRole))
                 .Replace("{deathcause}", FindDeathCause(config, damageType))
@@ -101,7 +100,6 @@ namespace CassieReplacement
             return new CassieAnnouncement();
         }
 
-        // Roles missing from the lookup table are spelled out from the role name ("Scp173" -> "scp 1 7 3").
         private static CassieAnnouncement ResolveScp(CassieOverrideConfigs config, RoleTypeId role)
         {
             if (config.ScpLookupTable.TryGetValue(role, out CassieAnnouncement entry))

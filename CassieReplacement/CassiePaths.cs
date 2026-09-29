@@ -10,7 +10,6 @@ namespace CassieReplacement
 
         public const string DefaultFolderName = "CASSIE Replacement";
 
-        // "{exiled_config}" is accepted as an alias for configs written for the EXILED build.
         private static readonly Regex PlaceholderRegex = new Regex(
             @"\{(?:labapi_configs|exiled_config)\}",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);

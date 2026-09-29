@@ -1,5 +1,6 @@
 namespace CassieReplacement.Reader
 {
+    using System.Globalization;
     using CassieReplacement.Config;
     using CassieReplacement.Playback;
     using PlayerRoles;
@@ -93,14 +94,13 @@ namespace CassieReplacement.Reader
                 ? config.ThreatOverviewNoScps
                 : scps == 1 ? config.ThreatOverviewOneScp : config.ThreatOverviewScps;
 
-            // {threatoverview} contains {scps}, so it has to be replaced first.
             return Replace("{threatoverview}", threatOverview)
-                .Replace("{scps}", scps.ToString())
-                .Replace("{classds}", classD.ToString())
-                .Replace("{scientists}", scientists.ToString())
-                .Replace("{foundationforces}", foundationForces.ToString())
-                .Replace("{chaosinsurgencys}", chaos.ToString())
-                .Replace("{flamingos}", flamingos.ToString());
+                .Replace("{scps}", scps.ToString(CultureInfo.InvariantCulture))
+                .Replace("{classds}", classD.ToString(CultureInfo.InvariantCulture))
+                .Replace("{scientists}", scientists.ToString(CultureInfo.InvariantCulture))
+                .Replace("{foundationforces}", foundationForces.ToString(CultureInfo.InvariantCulture))
+                .Replace("{chaosinsurgencys}", chaos.ToString(CultureInfo.InvariantCulture))
+                .Replace("{flamingos}", flamingos.ToString(CultureInfo.InvariantCulture));
         }
 
         public void Announce(bool? isNoisy = null, bool isSubtitles = true)
@@ -111,7 +111,10 @@ namespace CassieReplacement.Reader
                 return;
             }
 
-            CassiePlayback.Play(processed.Words, isNoisy ?? IsNoisy, isSubtitles, processed.Translation);
+            string prefix = Plugin.Singleton?.Config?.CustomCassiePrefix;
+            string words = string.IsNullOrEmpty(prefix) ? processed.Words : prefix + " " + processed.Words;
+
+            CassiePlayback.Play(words, isNoisy ?? IsNoisy, isSubtitles, processed.Translation);
         }
     }
 }

@@ -106,10 +106,8 @@ namespace CassieReplacement
             Speakers?.Rebuild();
         }
 
-        // Speaker positions are only known once the map has been generated.
         private void OnRoundStarted() => Speakers?.Rebuild();
 
-        // The game destroys the audio players on restart, so no references may survive it.
         private void OnRoundRestarted()
         {
             CustomCassieReader.Singleton?.CancelAll();

@@ -14,7 +14,6 @@ namespace CassieReplacement.Reader
     using SecretLabNAudio.Core;
     using SecretLabNAudio.Core.Extensions;
 
-    /// <summary>Plays custom clips. Messages are queued and voiced one after another by a single coroutine.</summary>
     public sealed class CustomCassieReader : IDisposable
     {
         private const string CoroutineTag = "CassieReplacement.Reader";
@@ -84,7 +83,6 @@ namespace CassieReplacement.Reader
             }
         }
 
-        /// <summary>Returns how many seconds the given words take to say, including jams, pauses and the final reverb.</summary>
         public float MeasureDuration(IReadOnlyList<string> words)
         {
             CassieMessage message = CassieMessageParser.Parse(words, ClipDatabase, Config, false, string.Empty);
@@ -228,7 +226,6 @@ namespace CassieReplacement.Reader
             }
         }
 
-        // Decoding is done on the thread pool ahead of playback. It only touches NVorbis and managed memory, never the Unity or game API.
         private Task PrepareSamples(CassieMessage message)
         {
             int databaseVersion = ClipDatabase.Version;
@@ -284,7 +281,6 @@ namespace CassieReplacement.Reader
             return data;
         }
 
-        // The cache holds decoded audio, so it is bounded by memory rather than by entry count. Anything that does not fit is decoded again on demand.
         private void Store(SampleKey key, SampleData data)
         {
             long budget = Math.Max(1, Config.MaxCacheMegabytes) * BytesPerMegabyte;
@@ -361,7 +357,6 @@ namespace CassieReplacement.Reader
             }
         }
 
-        // Linear interpolation between whole frames, so channels never bleed into each other.
         private static float[] ChangeSpeed(float[] input, int channels, float pitch)
         {
             int inputFrames = input.Length / channels;

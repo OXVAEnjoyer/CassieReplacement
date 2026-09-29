@@ -8,10 +8,6 @@ namespace CassieReplacement.Reader
     using CassieReplacement.Reader.Models;
     using LabApi.Features.Console;
 
-    /// <summary>
-    /// Registry of known clips. Readers always see an immutable snapshot that is replaced atomically,
-    /// so folders can be registered on a background thread while the game thread keeps looking words up.
-    /// </summary>
     public sealed class ClipDatabase
     {
         private readonly object writeLock = new object();
@@ -20,7 +16,6 @@ namespace CassieReplacement.Reader
 
         private int version;
 
-        /// <summary>Incremented on every change; used to invalidate caches built from the registered clips.</summary>
         public int Version => Volatile.Read(ref version);
 
         public int Count => clips.Count;

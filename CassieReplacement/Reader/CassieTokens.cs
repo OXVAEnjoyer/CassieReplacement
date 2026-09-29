@@ -61,7 +61,6 @@ namespace CassieReplacement.Reader
             return true;
         }
 
-        /// <summary>Recognises "prefix_x" and "suffix_x"; an empty value clears the modifier.</summary>
         public static bool TryParseModifier(string word, out bool isPrefix, out string value)
         {
             isPrefix = word.StartsWith(PrefixToken, StringComparison.Ordinal);
@@ -82,10 +81,6 @@ namespace CassieReplacement.Reader
             return Math.Max(MinWordSeconds, word.Length * SecondsPerCharacter) / pitch;
         }
 
-        /// <summary>
-        /// Spells a multi-digit or negative number as separate tokens. Single digits are left alone,
-        /// otherwise a digit without a clip would expand into itself forever.
-        /// </summary>
         public static bool TrySpellNumber(string word, out string[] tokens)
         {
             tokens = null;

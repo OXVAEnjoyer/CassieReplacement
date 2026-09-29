@@ -3,7 +3,6 @@ namespace CassieReplacement.Audio
     using System;
     using NAudio.Wave;
 
-    /// <summary>Single-use reader over a decoded clip that may be shared between players.</summary>
     internal sealed class FloatArraySampleProvider : ISampleProvider
     {
         private readonly float[] samples;

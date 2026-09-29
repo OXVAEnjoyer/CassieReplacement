@@ -4,7 +4,6 @@ namespace CassieReplacement
 
     public static class CassieUnit
     {
-        /// <summary>Splits a unit name such as "EPSILON-11" into its letter part and number.</summary>
         public static bool TryParse(string unitName, out string letter, out int number)
         {
             letter = string.Empty;
