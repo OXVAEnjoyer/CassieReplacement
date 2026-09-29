@@ -9,9 +9,8 @@ namespace CassieReplacement.Reader
     using LabApi.Features.Console;
 
     /// <summary>
-    /// FIX (thread safety): baza działa na niemutowalnym snapshocie (copy-on-write).
-    /// Rejestrację można bezpiecznie robić w Task.Run, a główny wątek czyta zawsze spójny słownik.
-    /// Poprzednio List&lt;CassieClip&gt; był modyfikowany z puli wątków podczas enumeracji na main threadzie.
+    /// Registry of known clips. Readers always see an immutable snapshot that is replaced atomically,
+    /// so folders can be registered on a background thread while the game thread keeps looking words up.
     /// </summary>
     public sealed class ClipDatabase
     {
@@ -21,15 +20,12 @@ namespace CassieReplacement.Reader
 
         private int version;
 
-        /// <summary>Zwiększane przy każdej zmianie - cache próbek audio unieważnia się po tym numerze.</summary>
+        /// <summary>Incremented on every change; used to invalidate caches built from the registered clips.</summary>
         public int Version => Volatile.Read(ref version);
 
         public int Count => clips.Count;
 
-        public IEnumerable<CassieClip> Clips => clips.Values;
-
-        // OPTYMALIZACJA: O(1) zamiast FirstOrDefault po liście przy każdym słowie.
-        public bool TryGetClip(string lowerInvariantName, out CassieClip clip) => clips.TryGetValue(lowerInvariantName, out clip);
+        public bool TryGetClip(string name, out CassieClip clip) => clips.TryGetValue(name, out clip);
 
         public List<string> GetListableClipNames()
         {
@@ -67,7 +63,6 @@ namespace CassieReplacement.Reader
                 Dictionary<string, CassieClip> next = new Dictionary<string, CassieClip>(clips, StringComparer.Ordinal);
                 foreach (CassieClip clip in found)
                 {
-                    // Kolizje nazw: dopisujemy '_' (zachowanie zgodne z oryginałem), ale w O(1) na próbę.
                     string name = clip.Name;
                     while (next.ContainsKey(name))
                     {
@@ -83,7 +78,6 @@ namespace CassieReplacement.Reader
             }
         }
 
-        /// <summary>Rejestracja w tle. Wyjątki są logowane (wcześniej połykane przez nieobserwowany Task).</summary>
         public Task RegisterFolderAsync(CassieDirectorySerializable configuration)
         {
             return Task.Run(() =>
@@ -94,7 +88,7 @@ namespace CassieReplacement.Reader
                 }
                 catch (Exception ex)
                 {
-                    Logger.Error($"[CassieReplacement] RegisterFolder failed for '{configuration.Path}': {ex}");
+                    Logger.Error($"[CassieReplacement] Registering '{configuration.Path}' failed: {ex}");
                 }
             });
         }
@@ -110,7 +104,6 @@ namespace CassieReplacement.Reader
 
         private static void Scan(DirectoryInfo directory, CassieDirectorySerializable configuration, List<CassieClip> output)
         {
-            // Kolejność (podfoldery przed plikami) zachowana - wpływa na rozstrzyganie duplikatów nazw.
             foreach (DirectoryInfo child in directory.EnumerateDirectories())
             {
                 Scan(child, configuration, output);
@@ -118,7 +111,6 @@ namespace CassieReplacement.Reader
 
             foreach (FileInfo file in directory.EnumerateFiles("*.ogg"))
             {
-                // FIX: jeden uszkodzony plik nie przerywa już rejestracji całego folderu (i nie wywala Enable()).
                 try
                 {
                     output.Add(new CassieClip(file, configuration.BleedTime, configuration.Prefix, configuration.ShouldList));

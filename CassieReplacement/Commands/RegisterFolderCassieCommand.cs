@@ -36,33 +36,29 @@ namespace CassieReplacement.Commands
                 return false;
             }
 
-            string path = CassiePaths.Resolve(Arg(arguments, 0));
-
-            // FIX: komenda nie tworzy już katalogów na dysku serwera (Resolve wcześniej robiło Directory.CreateDirectory).
+            string path = CassiePaths.Resolve(GetArgument(arguments, 0));
             if (!Directory.Exists(path))
             {
                 response = $"Directory not found: {path}";
                 return false;
             }
 
-            // FIX: parsowanie niezależne od kultury systemu (na serwerze z przecinkiem "0.5" dawało 0).
             float bleedTime = 0f;
-            if (arguments.Count > 1 && !float.TryParse(Arg(arguments, 1), NumberStyles.Float, CultureInfo.InvariantCulture, out bleedTime))
+            if (arguments.Count > 1 && !float.TryParse(GetArgument(arguments, 1), NumberStyles.Float, CultureInfo.InvariantCulture, out bleedTime))
             {
-                response = $"Invalid bleed time: {Arg(arguments, 1)}";
+                response = $"Invalid bleed time: {GetArgument(arguments, 1)}";
                 return false;
             }
 
-            string prefix = arguments.Count > 2 ? Arg(arguments, 2) : string.Empty;
+            string prefix = arguments.Count > 2 ? GetArgument(arguments, 2) : string.Empty;
             CassieDirectorySerializable directory = new CassieDirectorySerializable { Path = path, BleedTime = bleedTime, Prefix = prefix };
 
-            // THREAD SAFETY: ClipDatabase jest bezpieczna wątkowo (snapshot), a wyjątki są logowane.
             _ = reader.ClipDatabase.RegisterFolderAsync(directory);
 
-            response = $"Registering cassie directory in background, path {path}, prefix {prefix}, bleed {bleedTime}";
+            response = $"Registering cassie directory, path {path}, prefix {prefix}, bleed {bleedTime.ToString(CultureInfo.InvariantCulture)}";
             return true;
         }
 
-        private static string Arg(ArraySegment<string> arguments, int index) => arguments.Array[arguments.Offset + index];
+        private static string GetArgument(ArraySegment<string> arguments, int index) => arguments.Array[arguments.Offset + index];
     }
 }

@@ -27,7 +27,6 @@ namespace CassieReplacement.Commands
                 return false;
             }
 
-            // Wyczyszczenie bazy zmienia Version -> cache próbek unieważnia się automatycznie.
             reader.CancelAll();
             reader.ClipDatabase.UnregisterClips();
             response = "Unregistered clips.";

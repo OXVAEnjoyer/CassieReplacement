@@ -26,8 +26,6 @@ namespace CassieReplacement.Commands
                 return false;
             }
 
-            // FIX: 'words.First()' rzucało InvalidOperationException przy braku argumentu (+ zbędna kopia do List).
-            // FIX: InvariantCulture, odrzucamy NaN/Infinity/wartości ujemne.
             if (arguments.Count == 0
                 || !float.TryParse(arguments.Array[arguments.Offset], NumberStyles.Float, CultureInfo.InvariantCulture, out float volume)
                 || float.IsNaN(volume)

@@ -1,17 +1,13 @@
 namespace CassieReplacement
 {
+    using System;
     using System.Globalization;
     using CassieReplacement.Config;
-    using CassieReplacement.Playback;
     using CassieReplacement.Reader;
     using CassieReplacement.Reader.Enums;
     using PlayerRoles;
     using PlayerStatsSystem;
 
-    /// <summary>
-    /// Buduje i odtwarza komunikaty o falach i śmierci SCP.
-    /// REFACTOR: klasa statyczna (nie zawiera już żadnego stanu ani martwych handlerów EXILED).
-    /// </summary>
     public static class CassieEventHandlers
     {
         private const string DefaultUnitLetter = "a";
@@ -24,7 +20,6 @@ namespace CassieReplacement
                 return;
             }
 
-            // FIX: nieobsługiwana frakcja = brak komunikatu (wcześniej pusty CassieAnnouncement z null w polach -> NRE).
             CassieAnnouncement template = faction switch
             {
                 Faction.FoundationStaff => isMiniWave ? config.NtfMiniAnnouncement : config.NtfWaveAnnouncement,
@@ -32,12 +27,7 @@ namespace CassieReplacement
                 _ => null,
             };
 
-            if (template == null)
-            {
-                return;
-            }
-
-            template.GenericReplacement()
+            template?.GenericReplacement()
                 .Replace("{letter}", CreateUnitLetter(unitLetter))
                 .Replace("{number}", CreateUnitNumber(unitNumber))
                 .Announce();
@@ -61,24 +51,18 @@ namespace CassieReplacement
                 number = CreateUnitNumber(unitNumber);
             }
 
-            // FIX: TryGetValue z fallbackiem zamiast indeksatora - brak klucza w configu (np. SCP-173) rzucał KeyNotFoundException
-            // wewnątrz prefiksu Harmony, czyli w środku obsługi śmierci gracza.
-            CassieAnnouncement deathCause = config.DamageTypeTerminationAnnouncementLookupTable.TryGetValue(damageType, out CassieAnnouncement cause)
-                ? cause
-                : config.DamageTypeTerminationAnnouncementLookupTable.TryGetValue(CassieDamageType.Unknown, out CassieAnnouncement unknown)
-                    ? unknown
-                    : new CassieAnnouncement();
-
-            CassieAnnouncement team = config.TeamTerminationCallsignLookupTable.TryGetValue(attackerRole.GetTeam(), out CassieAnnouncement callSign)
+            Team attackerTeam = attackerRole.GetTeam();
+            CassieAnnouncement team = config.TeamTerminationCallsignLookupTable.TryGetValue(attackerTeam, out CassieAnnouncement callSign)
                 ? callSign
                 : new CassieAnnouncement();
+            CassieAnnouncement scpKiller = attackerTeam == Team.SCPs ? ResolveScp(config, attackerRole) : new CassieAnnouncement();
 
-            // Kolejność Replace ma znaczenie: {deathcause} wprowadza {team}, {team} wprowadza {scpkiller}/{letter}/{number}.
+            // Order matters: {deathcause} introduces {team}, and {team} introduces {scpkiller}, {letter} and {number}.
             config.ScpTerminationAnnouncement.GenericReplacement()
                 .Replace("{scp}", ResolveScp(config, victimRole))
-                .Replace("{deathcause}", deathCause)
+                .Replace("{deathcause}", FindDeathCause(config, damageType))
                 .Replace("{team}", team)
-                .Replace("{scpkiller}", attackerRole.GetTeam() == Team.SCPs ? ResolveScp(config, attackerRole) : new CassieAnnouncement())
+                .Replace("{scpkiller}", scpKiller)
                 .Replace("{letter}", letter)
                 .Replace("{number}", number)
                 .Announce();
@@ -106,7 +90,18 @@ namespace CassieReplacement
             }
         }
 
-        /// <summary>Wpis z configu, a dla roli spoza tabeli (np. nowy SCP) - komunikat wygenerowany z nazwy roli ("Scp173" -> "scp 1 7 3").</summary>
+        private static CassieAnnouncement FindDeathCause(CassieOverrideConfigs config, CassieDamageType damageType)
+        {
+            if (config.DamageTypeTerminationAnnouncementLookupTable.TryGetValue(damageType, out CassieAnnouncement cause)
+                || config.DamageTypeTerminationAnnouncementLookupTable.TryGetValue(CassieDamageType.Unknown, out cause))
+            {
+                return cause;
+            }
+
+            return new CassieAnnouncement();
+        }
+
+        // Roles missing from the lookup table are spelled out from the role name ("Scp173" -> "scp 1 7 3").
         private static CassieAnnouncement ResolveScp(CassieOverrideConfigs config, RoleTypeId role)
         {
             if (config.ScpLookupTable.TryGetValue(role, out CassieAnnouncement entry))
@@ -114,9 +109,9 @@ namespace CassieReplacement
                 return entry;
             }
 
-            string name = role.ToString();
             const string scpPrefix = "Scp";
-            if (!name.StartsWith(scpPrefix) || name.Length == scpPrefix.Length)
+            string name = role.ToString();
+            if (!name.StartsWith(scpPrefix, StringComparison.Ordinal) || name.Length == scpPrefix.Length)
             {
                 return new CassieAnnouncement();
             }
@@ -137,32 +132,6 @@ namespace CassieReplacement
             return new CassieAnnouncement(
                 unitNumber.ToString(CultureInfo.InvariantCulture),
                 unitNumber.ToString("00", CultureInfo.InvariantCulture));
-        }
-    }
-
-    /// <summary>DRY: parsowanie nazwy jednostki ("EPSILON-11") było zduplikowane w handlerze śmierci i w patchu fal.</summary>
-    public static class CassieUnit
-    {
-        public static bool TryParse(string unitName, out string letter, out int number)
-        {
-            letter = string.Empty;
-            number = 0;
-
-            if (string.IsNullOrWhiteSpace(unitName))
-            {
-                return false;
-            }
-
-            int dash = unitName.IndexOf('-');
-            if (dash <= 0 || dash == unitName.Length - 1)
-            {
-                return false;
-            }
-
-            letter = unitName.Substring(0, dash);
-
-            // FIX: TryParse zamiast int.Parse (FormatException dla niestandardowych nazw jednostek).
-            return int.TryParse(unitName.Substring(dash + 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out number);
         }
     }
 }

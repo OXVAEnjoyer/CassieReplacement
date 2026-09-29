@@ -4,8 +4,6 @@ namespace CassieReplacement.Config
     using System.ComponentModel;
     using CassieReplacement.Reader.Models;
 
-    // REFACTOR: klasa nazywała się "Config" w namespace "CassieReplacement.Config" - kolizja nazw (namespace vs typ).
-    // Nazwy WŁAŚCIWOŚCI zostały bez zmian, więc istniejące pliki YAML użytkowników dalej działają.
     public class CassieConfig
     {
         public bool UseGlobalSpeaker { get; set; } = true;
@@ -33,6 +31,9 @@ namespace CassieReplacement.Config
         {
             new CassieDirectorySerializable(),
         };
+
+        [Description("Upper limit, in megabytes, for decoded audio kept in memory. When it is reached the cache is emptied and clips are decoded again as needed.")]
+        public int MaxCacheMegabytes { get; set; } = 128;
 
         public Dictionary<string, string> WordsToBasegameOverride { get; set; } = new Dictionary<string, string>();
 

@@ -8,7 +8,6 @@ namespace CassieReplacement.Patches
 
         private static Harmony harmony;
 
-        /// <summary>Idempotentne. Przy błędzie (np. zmieniona sygnatura metody po aktualizacji gry) cofa już założone patche.</summary>
         public static void Apply()
         {
             if (harmony != null)
@@ -30,8 +29,7 @@ namespace CassieReplacement.Patches
 
         public static void Remove()
         {
-            // OPTYMALIZACJA: UnpatchSelf zamiast UnpatchAll(id) - zdejmuje wyłącznie nasze patche.
-            harmony?.UnpatchSelf();
+            harmony?.UnpatchAll(HarmonyId);
             harmony = null;
         }
     }

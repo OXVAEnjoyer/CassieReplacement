@@ -3,27 +3,23 @@ namespace CassieReplacement.Audio
     using System;
     using System.Collections.Generic;
     using CassieReplacement.Config;
-    using LabApi.Features.Console;
+    using Logger = LabApi.Features.Console.Logger;
     using MapGeneration;
     using PlayerRoles.PlayableScps.Scp079;
     using SecretLabNAudio.Core;
     using SecretLabNAudio.Core.Extensions;
     using UnityEngine;
 
-    /// <summary>
-    /// REFACTOR (SRP): cała logika głośników wyciągnięta z Plugin.cs.
-    /// Właściciel wszystkich AudioPlayerów CASSIE.
-    /// </summary>
+    /// <summary>Owns every audio player used to voice CASSIE and decides who hears which speaker.</summary>
     public sealed class SpeakerManager : IDisposable
     {
         private readonly Plugin plugin;
 
         private readonly List<AudioPlayer> players = new List<AudioPlayer>();
 
-        // OPTYMALIZACJA: pokój -> pozycje głośników liczone RAZ przy budowie (zamiast LINQ + Room.Get w filtrze wywoływanym per pakiet audio).
         private readonly Dictionary<RoomIdentifier, List<Vector3>> speakersByRoom = new Dictionary<RoomIdentifier, List<Vector3>>();
 
-        // OPTYMALIZACJA: wynik "czy gracz jest w zasięgu głośników przestrzennych" cache'owany na klatkę.
+        // The send-engine filters run for every listener and every audio packet, so the result is cached per frame.
         private readonly Dictionary<ReferenceHub, bool> rangeCache = new Dictionary<ReferenceHub, bool>();
 
         private int rangeCacheFrame = -1;
@@ -47,7 +43,7 @@ namespace CassieReplacement.Audio
 
             if (Config.UseGlobalSpeaker)
             {
-                CreateGlobalPlayer(Config.GlobalSpeakerVolume);
+                CreateGlobalPlayer(Config.GlobalSpeakerVolume, filtered: true);
             }
 
             if (Config.UseSpatialSpeakers)
@@ -56,7 +52,6 @@ namespace CassieReplacement.Audio
             }
         }
 
-        /// <summary>Gwarantuje, że istnieje przynajmniej jeden głośnik (dawniej EnsureSpeakers).</summary>
         public void EnsureReady()
         {
             if (players.Count > 0)
@@ -67,7 +62,6 @@ namespace CassieReplacement.Audio
             Rebuild();
             if (players.Count == 0)
             {
-                // Konfiguracja bez żadnego głośnika = CASSIE niema. Awaryjnie globalny.
                 CreateGlobalPlayer(Config.GlobalSpeakerVolume > 0f ? Config.GlobalSpeakerVolume : 1f, filtered: false);
             }
         }
@@ -82,7 +76,7 @@ namespace CassieReplacement.Audio
                 }
                 catch (Exception ex)
                 {
-                    Logger.Debug($"[CassieReplacement] StopAll failed (player destroyed?): {ex.Message}");
+                    Logger.Debug($"[CassieReplacement] Could not stop an audio player: {ex.Message}");
                 }
             }
         }
@@ -91,14 +85,13 @@ namespace CassieReplacement.Audio
         {
             foreach (AudioPlayer player in players)
             {
-                // FIX: obiekt mógł już zostać zniszczony przez grę przy restarcie rundy - nie wolno przerwać sprzątania.
                 try
                 {
                     player?.Destroy();
                 }
                 catch (Exception ex)
                 {
-                    Logger.Debug($"[CassieReplacement] AudioPlayer.Destroy failed (already destroyed?): {ex.Message}");
+                    Logger.Debug($"[CassieReplacement] Could not destroy an audio player: {ex.Message}");
                 }
             }
 
@@ -111,7 +104,12 @@ namespace CassieReplacement.Audio
 
         public void Dispose() => Destroy();
 
-        private void CreateGlobalPlayer(float volume, bool filtered = true)
+        private static bool IsValidListener(LabApi.Features.Wrappers.Player player)
+        {
+            return player != null && !player.IsHost && player.ReferenceHub != null;
+        }
+
+        private void CreateGlobalPlayer(float volume, bool filtered)
         {
             SpeakerSettings settings = SpeakerSettings.GloballyAudible with { Volume = volume };
             GlobalPlayer = AudioPlayer.Create(settings);
@@ -153,9 +151,8 @@ namespace CassieReplacement.Audio
 
         private List<Vector3> CollectSpeakerPositions()
         {
-            List<Vector3> all = new List<Vector3>();
+            List<Vector3> positions = new List<Vector3>();
 
-            // FIX: poprzednio lazy IEnumerable po żywej kolekcji, enumerowane ponownie przy KAŻDYM wywołaniu filtra.
             foreach (Scp079InteractableBase interactable in Scp079Speaker.AllInstances)
             {
                 if (interactable is not Scp079Speaker speaker)
@@ -169,31 +166,21 @@ namespace CassieReplacement.Audio
                     continue;
                 }
 
-                all.Add(speaker.Position);
+                positions.Add(speaker.Position);
 
                 if (!speakersByRoom.TryGetValue(room, out List<Vector3> inRoom))
                 {
-                    inRoom = new List<Vector3>(2);
+                    inRoom = new List<Vector3>();
                     speakersByRoom.Add(room, inRoom);
                 }
 
                 inRoom.Add(speaker.Position);
             }
 
-            return all;
+            return positions;
         }
 
-        private static bool IsValidListener(LabApi.Features.Wrappers.Player player)
-        {
-            return player != null && !player.IsHost && player.ReferenceHub != null;
-        }
-
-        /// <summary>
-        /// true = gracz słyszy głośniki przestrzenne, false = słyszy głośnik globalny.
-        /// FIX: filtr globalny i przestrzenny korzystają z JEDNEJ funkcji (wcześniej przestrzenny zależał od
-        /// listy wypełnianej jako efekt uboczny filtra globalnego - zależność od kolejności wywołań).
-        /// FIX: poprzednia logika 'Any(dist >= max)' powodowała podwójne granie (global + spatial) gdy w pokoju były 2 głośniki.
-        /// </summary>
+        // True when the listener is within reach of a spatial speaker in their room, false when the global speaker should be used.
         private bool IsInSpatialRange(ReferenceHub hub)
         {
             int frame = Time.frameCount;
@@ -203,13 +190,12 @@ namespace CassieReplacement.Audio
                 rangeCacheFrame = frame;
             }
 
-            if (rangeCache.TryGetValue(hub, out bool cached))
+            if (!rangeCache.TryGetValue(hub, out bool inRange))
             {
-                return cached;
+                inRange = ComputeInRange(hub);
+                rangeCache.Add(hub, inRange);
             }
 
-            bool inRange = ComputeInRange(hub);
-            rangeCache[hub] = inRange;
             return inRange;
         }
 
@@ -221,12 +207,12 @@ namespace CassieReplacement.Audio
                 return false;
             }
 
-            Vector3 cameraPosition = hub.PlayerCameraReference.position;
+            Vector3 listenerPosition = hub.PlayerCameraReference.position;
             float maxDistanceSqr = Config.SpatialSpeakerMaxDistance * Config.SpatialSpeakerMaxDistance;
 
-            for (int i = 0; i < positions.Count; i++)
+            foreach (Vector3 position in positions)
             {
-                if ((cameraPosition - positions[i]).sqrMagnitude < maxDistanceSqr)
+                if ((listenerPosition - position).sqrMagnitude < maxDistanceSqr)
                 {
                     return true;
                 }

@@ -1,6 +1,7 @@
 namespace CassieReplacement.Commands
 {
     using System;
+    using System.Globalization;
     using CassieReplacement.Reader;
     using CommandSystem;
 
@@ -9,10 +10,9 @@ namespace CassieReplacement.Commands
     {
         public string Command => "listwords";
 
-        // FIX: alias identyczny z nazwą komendy był zbędny.
         public string[] Aliases { get; } = Array.Empty<string>();
 
-        public string Description => "Lists all registered CUSTOMCASSIE words.";
+        public string Description => "Lists all registered CUSTOMCASSIE words. With words as arguments, prints how long they take to say. (usage: listwords [words])";
 
         public bool Execute(ArraySegment<string> arguments, ICommandSender sender, out string response)
         {
@@ -23,8 +23,14 @@ namespace CassieReplacement.Commands
                 return false;
             }
 
-            // Usunięto ukrytą funkcję debugową (listwords <słowo> zwracało szacowany czas trwania) - nie była opisana nigdzie.
-            // OPTYMALIZACJA: string.Join zamiast konkatenacji w pętli.
+            if (arguments.Count > 0)
+            {
+                string[] words = new string[arguments.Count];
+                Array.Copy(arguments.Array, arguments.Offset, words, 0, arguments.Count);
+                response = reader.MeasureDuration(words).ToString("0.##", CultureInfo.InvariantCulture) + " s";
+                return true;
+            }
+
             response = "The available words are:\n" + string.Join(", ", reader.ClipDatabase.GetListableClipNames());
             return true;
         }

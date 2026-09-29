@@ -11,7 +11,6 @@ namespace CassieReplacement.Patches
         [HarmonyPrefix]
         public static bool Prefix(ReferenceHub scp, DamageHandlerBase hit)
         {
-            // FIX: Singleton == null (plugin wyłączony w trakcie gry) nie może rzucać NRE w środku obsługi śmierci.
             if (Plugin.Singleton?.Config?.CassieOverrideConfig.ShouldOverrideAnnouncements != true)
             {
                 return true;
@@ -23,7 +22,6 @@ namespace CassieReplacement.Patches
                 return true;
             }
 
-            // Czyści kolejkę gry ORAZ własną kolejkę audio (inaczej stare słowa dogrywają się po komunikacie o terminacji).
             CassiePlayback.ClearAll();
             CassieEventHandlers.HandleAnnouncingTermination(hit, role.RoleTypeId);
             return false;

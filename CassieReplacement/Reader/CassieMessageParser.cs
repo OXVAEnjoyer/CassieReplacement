@@ -14,10 +14,6 @@ namespace CassieReplacement.Reader
         Yield,
     }
 
-    /// <summary>
-    /// REFACTOR: jeden krok odtwarzania. Zastępuje przepisywanie listy stringów w miejscu
-    /// (zmienianie nazw klipów na "p1.5_slowo", wstawianie/usuwanie elementów podczas iteracji).
-    /// </summary>
     internal readonly struct CassieStep
     {
         public CassieStep(StepKind kind, string name, CassieClip clip, float pitch, float seconds, int jamDelay, int jamAmount)
@@ -33,10 +29,10 @@ namespace CassieReplacement.Reader
 
         public StepKind Kind { get; }
 
-        /// <summary>Słowo wraz z prefiksem/sufiksem.</summary>
+        /// <summary>Word including any active prefix and suffix.</summary>
         public string Name { get; }
 
-        /// <summary>null = brak klipu, odtwarzanie zastępujemy szacowaną pauzą.</summary>
+        /// <summary>Null when no clip is registered; the word is then replaced by an estimated pause.</summary>
         public CassieClip Clip { get; }
 
         public float Pitch { get; }
@@ -52,7 +48,7 @@ namespace CassieReplacement.Reader
     {
         public List<CassieStep> Steps { get; } = new List<CassieStep>();
 
-        /// <summary>Tekst dla bazowego CASSIE (ciche "kropki" + szum). null gdy useCassie == false.</summary>
+        /// <summary>Text handed to the base-game CASSIE, or null when the base game should stay silent.</summary>
         public string BaseAnnouncement { get; set; }
 
         public string Subtitle { get; set; } = string.Empty;
@@ -69,50 +65,42 @@ namespace CassieReplacement.Reader
         public static CassieMessage Parse(IReadOnlyList<string> input, ClipDatabase database, CassieConfig config, bool useCassie, string translation)
         {
             CassieMessage message = new CassieMessage();
-            StringBuilder baseBuilder = useCassie ? StringBuilderPool.Shared.Rent() : null;
+            StringBuilder baseAnnouncement = useCassie ? StringBuilderPool.Shared.Rent() : null;
 
             try
             {
-                List<string> work = new List<string>(input.Count);
+                List<string> words = new List<string>(input.Count);
                 foreach (string raw in input)
                 {
                     if (!string.IsNullOrWhiteSpace(raw))
                     {
-                        work.Add(raw.ToLowerInvariant());
+                        words.Add(raw.ToLowerInvariant());
                     }
                 }
 
-                List<string> subtitleWords = new List<string>(work.Count);
-
-                // FIX: prefix/suffix/pitch/jam to zmienne LOKALNE (poprzednio pola instancji Singletona - stan przeciekał między komunikatami).
+                List<string> subtitleWords = new List<string>(words.Count);
                 string prefix = string.Empty;
                 string suffix = string.Empty;
                 float pitch = 1f;
                 int jamDelay = 0;
                 int jamAmount = 0;
 
-                int i = 0;
-                while (i < work.Count)
+                int index = 0;
+                while (index < words.Count)
                 {
-                    string word = work[i];
+                    string word = words[index];
 
                     if (CassieTokens.TryParseJam(word, out int newJamDelay, out int newJamAmount))
                     {
                         jamDelay = newJamDelay;
                         jamAmount = newJamAmount;
-                        i++;
-                        continue;
                     }
-
-                    if (CassieTokens.TryParsePitch(word, out float newPitch))
+                    else if (CassieTokens.TryParsePitch(word, out float newPitch))
                     {
                         pitch = newPitch;
-                        baseBuilder?.Append(' ').Append(word);
-                        i++;
-                        continue;
+                        baseAnnouncement?.Append(' ').Append(word);
                     }
-
-                    if (CassieTokens.TryParseModifier(word, out bool isPrefix, out string modifier))
+                    else if (CassieTokens.TryParseModifier(word, out bool isPrefix, out string modifier))
                     {
                         if (isPrefix)
                         {
@@ -122,87 +110,73 @@ namespace CassieReplacement.Reader
                         {
                             suffix = modifier;
                         }
-
-                        i++;
-                        continue;
                     }
-
-                    if (CassieTokens.TryParseYield(word, out float yieldSeconds))
+                    else if (CassieTokens.TryParseYield(word, out float yieldSeconds))
                     {
                         message.Steps.Add(new CassieStep(StepKind.Yield, word, null, pitch, yieldSeconds, 0, 0));
-                        baseBuilder?.Append(' ').Append(word);
-                        i++;
-                        continue;
+                        baseAnnouncement?.Append(' ').Append(word);
                     }
-
-                    string lookupName = prefix + word + suffix;
-                    database.TryGetClip(lookupName, out CassieClip clip);
-
-                    if (clip == null && CassieTokens.TrySpellNumber(word, out string[] digits))
+                    else
                     {
-                        // Liczba bez własnego klipu -> rozwijamy na cyfry i przetwarzamy je w tej samej pętli.
-                        work.RemoveAt(i);
-                        work.InsertRange(i, digits);
-                        continue;
+                        string lookupName = prefix + word + suffix;
+                        database.TryGetClip(lookupName, out CassieClip clip);
+
+                        if (clip == null && CassieTokens.TrySpellNumber(word, out string[] digits))
+                        {
+                            words.RemoveAt(index);
+                            words.InsertRange(index, digits);
+                            continue;
+                        }
+
+                        message.Steps.Add(new CassieStep(StepKind.Word, lookupName, clip, pitch, 0f, jamDelay, jamAmount));
+                        jamDelay = 0;
+                        jamAmount = 0;
+                        subtitleWords.Add(word);
+
+                        if (baseAnnouncement != null)
+                        {
+                            AppendWord(baseAnnouncement, config, lookupName, word, clip, pitch);
+                        }
                     }
 
-                    message.Steps.Add(new CassieStep(StepKind.Word, lookupName, clip, pitch, 0f, jamDelay, jamAmount));
-                    jamDelay = 0;
-                    jamAmount = 0;
-                    subtitleWords.Add(word);
-
-                    if (baseBuilder != null)
-                    {
-                        AppendToBaseAnnouncement(baseBuilder, config, lookupName, word, clip, pitch);
-                    }
-
-                    i++;
+                    index++;
                 }
 
-                if (baseBuilder != null)
+                if (baseAnnouncement != null)
                 {
-                    message.BaseAnnouncement = "noparse" + baseBuilder.ToString();
+                    message.BaseAnnouncement = "noparse" + baseAnnouncement;
                 }
 
-                // FIX: napisy nie zawierają już tokenów "pitch_x"/"jam_x_y" ani przemianowanych nazw klipów.
                 message.Subtitle = string.IsNullOrWhiteSpace(translation) ? string.Join(" ", subtitleWords) : translation;
                 return message;
             }
             finally
             {
-                if (baseBuilder != null)
+                if (baseAnnouncement != null)
                 {
-                    StringBuilderPool.Shared.Return(baseBuilder);
+                    StringBuilderPool.Shared.Return(baseAnnouncement);
                 }
             }
         }
 
-        private static void AppendToBaseAnnouncement(StringBuilder builder, CassieConfig config, string lookupName, string rawWord, CassieClip clip, float pitch)
+        // The base game gets silent "dots" as long as the clip, so its subtitles and noise run in parallel with the custom voice.
+        private static void AppendWord(StringBuilder builder, CassieConfig config, string lookupName, string word, CassieClip clip, float pitch)
         {
             bool hasOverride = config.WordsToBasegameOverride.TryGetValue(lookupName, out string overrideWord);
 
-            if (clip == null)
+            if (hasOverride || clip == null)
             {
-                builder.Append(' ').Append(hasOverride ? overrideWord : rawWord);
+                builder.Append(' ').Append(hasOverride ? overrideWord : word);
                 return;
             }
 
-            if (hasOverride)
-            {
-                builder.Append(' ').Append(overrideWord);
-                return;
-            }
-
-            // Bazowy CASSIE odgrywa ciszę ("kropki") o tej samej długości co klip - dzięki temu napisy/szum idą równolegle.
-            // (Martwa gałąź 'msg == "<split>"' z oryginału usunięta - klip o takiej nazwie nie może istnieć.)
             int dots = (int)Math.Round(clip.Length / pitch * DotsPerSecond, MidpointRounding.AwayFromZero);
             builder.Append(" pitch_1");
-            for (int j = 0; j < dots; j++)
+            for (int i = 0; i < dots; i++)
             {
                 builder.Append(" .");
             }
 
-            // FIX: format niezależny od kultury (na serwerze z przecinkiem dziesiętnym powstawało "pitch_1,5").
             builder.Append(" pitch_").Append(CassieTokens.FormatPitch(pitch)).Append(" jam_0_0");
         }
     }

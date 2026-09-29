@@ -10,8 +10,8 @@ namespace CassieReplacement
 
         public const string DefaultFolderName = "CASSIE Replacement";
 
-        // Stary placeholder z wersji EXILED traktujemy jako alias katalogu configs LabAPI.
-        private static readonly Regex PlaceholderRegex = new(
+        // "{exiled_config}" is accepted as an alias for configs written for the EXILED build.
+        private static readonly Regex PlaceholderRegex = new Regex(
             @"\{(?:labapi_configs|exiled_config)\}",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
@@ -27,10 +27,6 @@ namespace CassieReplacement
             }
         }
 
-        /// <summary>
-        /// Zamienia placeholdery i zwraca pełną ścieżkę.
-        /// FIX: metoda nie tworzy już katalogów (poprzednio komenda RA mogła tworzyć dowolne foldery na dysku serwera).
-        /// </summary>
         public static string Resolve(string path)
         {
             if (string.IsNullOrWhiteSpace(path))

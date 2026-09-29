@@ -13,17 +13,14 @@ namespace CassieReplacement
     using MEC;
     using SecretLabNAudio.Core;
 
-    // REFACTOR: EXILED (#if) usunięty - plugin jest teraz czystym LabAPI. Wersja EXILED była oznaczona jako WIP.
     public sealed class Plugin : Plugin<CassieConfig>
     {
-        // FIX: wersja w jednym miejscu (README/folder mówiły 1.7.0, kod 1.9.0).
-        private static readonly Version PluginVersion = new(1, 9, 0);
+        private const float StartupSpeakerDelaySeconds = 2f;
 
         private CoroutineHandle startupHandle;
 
         public static Plugin Singleton { get; private set; }
 
-        // Zachowana kompatybilność wsteczna z innymi pluginami korzystającymi z tych właściwości.
         public static AudioPlayer CassiePlayerGlobal => Singleton?.Speakers?.GlobalPlayer;
 
         public static AudioPlayer CassiePlayer => Singleton?.Speakers?.SpatialPlayer;
@@ -34,9 +31,9 @@ namespace CassieReplacement
 
         public override string Author => "icedchqi";
 
-        public override Version Version => PluginVersion;
+        public override Version Version { get; } = new Version(1, 9, 0);
 
-        public override Version RequiredApiVersion => new(LabApiProperties.CompiledVersion);
+        public override Version RequiredApiVersion { get; } = new Version(LabApiProperties.CompiledVersion);
 
         public SpeakerManager Speakers { get; private set; }
 
@@ -45,10 +42,8 @@ namespace CassieReplacement
             Singleton = this;
             Speakers = new SpeakerManager(this);
             CustomCassieReader.Create(this, Speakers);
-
             RegisterConfiguredClips();
 
-            // FIX: gdy patchowanie się nie uda, plugin nie zostaje w stanie "pół-włączonym".
             try
             {
                 Patcher.Apply();
@@ -64,13 +59,11 @@ namespace CassieReplacement
             ServerEvents.RoundStarted += OnRoundStarted;
             ServerEvents.RoundRestarted += OnRoundRestarted;
 
-            // Serwer mógł już wystartować (plugin włączony w trakcie działania) - zbuduj głośniki po chwili.
             startupHandle = Timing.CallDelayed(StartupSpeakerDelaySeconds, () => Speakers?.EnsureReady());
         }
 
         public override void Disable()
         {
-            // FIX: wyrejestrowanie WSZYSTKICH eventów i zatrzymanie WSZYSTKICH coroutine (MEC).
             ServerEvents.WaitingForPlayers -= OnWaitingForPlayers;
             ServerEvents.RoundStarted -= OnRoundStarted;
             ServerEvents.RoundRestarted -= OnRoundRestarted;
@@ -84,15 +77,11 @@ namespace CassieReplacement
             Singleton = null;
         }
 
-        private const float StartupSpeakerDelaySeconds = 2f;
-
         private void RegisterConfiguredClips()
         {
-            CustomCassieReader reader = CustomCassieReader.Singleton;
-
-            // OPTYMALIZACJA: konfiguracji użytkownika nie mutujemy (poprzednio Enable() nadpisywał Config.BaseDirectories).
+            ClipDatabase database = CustomCassieReader.Singleton.ClipDatabase;
             string defaultDirectory = CassiePaths.DefaultAudioDirectory;
-            bool defaultPresent = false;
+            bool defaultRegistered = false;
 
             foreach (CassieDirectorySerializable directory in Config.BaseDirectories)
             {
@@ -101,33 +90,28 @@ namespace CassieReplacement
                     continue;
                 }
 
-                string resolved = CassiePaths.Resolve(directory.Path);
-                defaultPresent |= string.Equals(resolved, defaultDirectory, StringComparison.OrdinalIgnoreCase);
-                reader.ClipDatabase.RegisterFolder(directory, createIfMissing: true);
+                defaultRegistered |= string.Equals(CassiePaths.Resolve(directory.Path), defaultDirectory, StringComparison.OrdinalIgnoreCase);
+                database.RegisterFolder(directory, createIfMissing: true);
             }
 
-            if (!defaultPresent)
+            if (!defaultRegistered)
             {
-                reader.ClipDatabase.RegisterFolder(new CassieDirectorySerializable { Path = defaultDirectory }, createIfMissing: true);
+                database.RegisterFolder(new CassieDirectorySerializable { Path = defaultDirectory }, createIfMissing: true);
             }
         }
 
         private void OnWaitingForPlayers()
         {
-            // FIX: stan między rundami - zawsze czyścimy kolejkę i budujemy głośniki od zera.
             CustomCassieReader.Singleton?.CancelAll();
             Speakers?.Rebuild();
         }
 
-        private void OnRoundStarted()
-        {
-            // Pozycje głośników 079 mogą być znane dopiero po wygenerowaniu mapy - odśwież.
-            Speakers?.Rebuild();
-        }
+        // Speaker positions are only known once the map has been generated.
+        private void OnRoundStarted() => Speakers?.Rebuild();
 
+        // The game destroys the audio players on restart, so no references may survive it.
         private void OnRoundRestarted()
         {
-            // FIX: po restarcie rundy stare AudioPlayery są niszczone przez grę - nie zostawiamy do nich referencji.
             CustomCassieReader.Singleton?.CancelAll();
             Speakers?.Destroy();
         }

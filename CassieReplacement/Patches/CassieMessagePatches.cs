@@ -12,21 +12,17 @@ namespace CassieReplacement.Patches
         private const string NoParseToken = "noparse";
         private const string NoCassieToken = "nocassie";
         private const string SizeZeroTag = "<size=0>";
+        private const string SizeCloseTag = "</size>";
         private const string SizeSplitTag = "</size><split>";
         private const string SplitTag = "<split>";
         private const string DefaultPrefix = "customcassie";
 
         private static readonly char[] WordSeparators = { ' ' };
 
+        /// <summary>Takes over an announcement that carries the custom prefix (or every one, when configured). Returns false to leave it to the base game.</summary>
         public static bool TryTakeOver(string words, bool makeNoise, bool customAnnouncement)
         {
-            if (string.IsNullOrWhiteSpace(words))
-            {
-                return false;
-            }
-
-            // Ścieżka wywoływana dla KAŻDEGO komunikatu gry - najpierw najtańsze wyjścia.
-            if (ContainsToken(words, NoParseToken))
+            if (string.IsNullOrWhiteSpace(words) || ContainsToken(words, NoParseToken))
             {
                 return false;
             }
@@ -39,9 +35,6 @@ namespace CassieReplacement.Patches
             }
 
             string prefix = plugin.Config.CustomCassiePrefix ?? DefaultPrefix;
-
-            // OPTYMALIZACJA: ContainsToken nie alokuje (poprzednio 3x Split z nową tablicą separatorów na komunikat).
-            // Zmiana zachowania: usunięty dodatkowy StartsWith(prefix) - dopasowywał także słowa typu "customcassiefoo".
             bool hasPrefix = ContainsToken(words, prefix);
             if (!hasPrefix && !plugin.Config.CassieOverrideConfig.ShouldOverrideAll)
             {
@@ -72,11 +65,12 @@ namespace CassieReplacement.Patches
             return true;
         }
 
+        // Sized announcements look like: subtitle<size=0>words</size><split>subtitle<size=0>words</size>
         private static void HandleSized(CustomCassieReader reader, string words, string prefix, bool hasPrefix, bool makeNoise, bool customAnnouncement, bool useCassie)
         {
             string[] sections = words.Split(new[] { SizeSplitTag }, StringSplitOptions.None);
 
-            if (hasPrefix && sections.Length > 0)
+            if (hasPrefix)
             {
                 List<string> head = new List<string>();
                 foreach (string word in sections[0].Split(WordSeparators, StringSplitOptions.RemoveEmptyEntries))
@@ -97,7 +91,7 @@ namespace CassieReplacement.Patches
 
             try
             {
-                bool appendedAny = false;
+                bool isFirstSection = true;
                 foreach (string section in sections)
                 {
                     if (string.IsNullOrWhiteSpace(section))
@@ -105,23 +99,20 @@ namespace CassieReplacement.Patches
                         continue;
                     }
 
-                    // FIX (do weryfikacji w grze): oryginał dodawał <split> warunkiem 'i < Length - 2', co gubiło separator przed
-                    // ostatnią sekcją i nie uwzględniało pominiętych pustych sekcji. Teraz separator jest między KAŻDĄ parą sekcji.
-                    if (appendedAny)
+                    if (!isFirstSection)
                     {
                         subtitles.Append(SplitTag);
                         input.Append(SplitTag);
                     }
 
-                    string[] bySize = section.Split(new[] { SizeZeroTag }, StringSplitOptions.None);
-                    subtitles.Append(bySize[0]);
-                    if (bySize.Length > 1)
-                    {
-                        // Ostatnia sekcja zachowuje końcowe </size> - nie może trafić do słów jako "słowo".
-                        input.Append(bySize[1].Replace("</size>", string.Empty));
-                    }
+                    isFirstSection = false;
 
-                    appendedAny = true;
+                    string[] parts = section.Split(new[] { SizeZeroTag }, StringSplitOptions.None);
+                    subtitles.Append(parts[0]);
+                    if (parts.Length > 1)
+                    {
+                        input.Append(parts[1].Replace(SizeCloseTag, string.Empty));
+                    }
                 }
 
                 inputText = input.ToString();
@@ -141,10 +132,10 @@ namespace CassieReplacement.Patches
                 useCassie);
         }
 
-        /// <summary>Bezalokacyjne sprawdzenie, czy 'words' zawiera token (rozdzielany spacją lub ';') równy 'token' bez względu na wielkość liter.</summary>
+        // Runs for every announcement in the game, so it scans the text in place instead of splitting it.
         private static bool ContainsToken(string words, string token)
         {
-            if (string.IsNullOrEmpty(words) || string.IsNullOrEmpty(token))
+            if (string.IsNullOrEmpty(token))
             {
                 return false;
             }

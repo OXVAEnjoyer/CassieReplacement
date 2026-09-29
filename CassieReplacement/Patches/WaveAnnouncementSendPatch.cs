@@ -21,7 +21,6 @@ namespace CassieReplacement.Patches
             int unitNumber = 0;
             if (NamingRulesManager.TryGetNamingRule(Team.FoundationForces, out UnitNamingRule rule))
             {
-                // DRY: wspólny parser nazwy jednostki (poprzednio Split('-') + parts[1] powielone z handlera śmierci).
                 CassieUnit.TryParse(rule.LastGeneratedName, out unitLetter, out unitNumber);
             }
 

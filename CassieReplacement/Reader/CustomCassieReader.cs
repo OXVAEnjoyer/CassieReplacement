@@ -14,16 +14,7 @@ namespace CassieReplacement.Reader
     using SecretLabNAudio.Core;
     using SecretLabNAudio.Core.Extensions;
 
-    /// <summary>
-    /// Odtwarza własne klipy CASSIE. Komunikaty są kolejkowane i odtwarzane po kolei przez JEDNĄ coroutine.
-    ///
-    /// REFACTOR / FIX:
-    ///  - jedna coroutine zamiast jednej na komunikat: koniec z nakładaniem się komunikatów, które nawzajem ucinały sobie audio
-    ///    (StopPlayers jednego zatrzymywał słowo drugiego),
-    ///  - koniec z HandlesToMessages/IsBeingUsed (modyfikacja słownika w foreach = InvalidOperationException, wyciek wpisów),
-    ///  - anulowanie = KillCoroutines + Clear (wcześniej DateTime.Now, które NIE anulowało komunikatu będącego w 2.35 s 'bell lead-in'),
-    ///  - koniec z statycznym ticksSinceCassieSpoke i coroutine CassieCheck (nigdy nie czytane, działała co klatkę do końca świata).
-    /// </summary>
+    /// <summary>Plays custom clips. Messages are queued and voiced one after another by a single coroutine.</summary>
     public sealed class CustomCassieReader : IDisposable
     {
         private const string CoroutineTag = "CassieReplacement.Reader";
@@ -32,17 +23,17 @@ namespace CassieReplacement.Reader
         private const int JamMaxPercent = 100;
         private const float PercentToFraction = 0.01f;
         private const int DefaultSampleRate = 48000;
-        private const int MaxCachedClips = 1024;
+        private const long BytesPerMegabyte = 1024L * 1024L;
 
         private readonly Plugin plugin;
         private readonly SpeakerManager speakers;
         private readonly Queue<CassieMessage> queue = new Queue<CassieMessage>();
-
-        // OPTYMALIZACJA: jeden cache zdekodowanych próbek (klucz: klip + pitch). Zastępuje SampleCache, PitchSampleCache
-        // (zapisywany, nigdy nie czytany) i PitchShiftedTempClips. Dekodowanie robione w tle, przed startem komunikatu.
         private readonly ConcurrentDictionary<SampleKey, SampleData> sampleCache = new ConcurrentDictionary<SampleKey, SampleData>();
 
+        private readonly object cacheLock = new object();
+
         private CoroutineHandle runner;
+        private long cachedBytes;
         private int cachedDatabaseVersion = -1;
 
         private CustomCassieReader(Plugin plugin, SpeakerManager speakers)
@@ -51,7 +42,6 @@ namespace CassieReplacement.Reader
             this.speakers = speakers;
         }
 
-        // FIX: brak statycznego inicjalizatora tworzącego instancję przed startem pluginu.
         public static CustomCassieReader Singleton { get; private set; }
 
         public ClipDatabase ClipDatabase { get; } = new ClipDatabase();
@@ -74,7 +64,6 @@ namespace CassieReplacement.Reader
             speakers.EnsureReady();
 
             CassieMessage message = CassieMessageParser.Parse(words, ClipDatabase, Config, useCassie, translation);
-
             if (message.BaseAnnouncement != null)
             {
                 CassiePlayback.Play(message.BaseAnnouncement, isNoisy, customAnnouncement, message.Subtitle);
@@ -95,7 +84,25 @@ namespace CassieReplacement.Reader
             }
         }
 
-        /// <summary>Przerywa bieżący komunikat i czyści kolejkę.</summary>
+        /// <summary>Returns how many seconds the given words take to say, including jams, pauses and the final reverb.</summary>
+        public float MeasureDuration(IReadOnlyList<string> words)
+        {
+            CassieMessage message = CassieMessageParser.Parse(words, ClipDatabase, Config, false, string.Empty);
+            if (message.Steps.Count == 0)
+            {
+                return 0f;
+            }
+
+            float seconds = 0f;
+
+            foreach (CassieStep step in message.Steps)
+            {
+                seconds += GetStepSeconds(step);
+            }
+
+            return seconds + GetReverbSeconds(message);
+        }
+
         public void CancelAll()
         {
             Timing.KillCoroutines(runner);
@@ -106,7 +113,7 @@ namespace CassieReplacement.Reader
         public void Dispose()
         {
             CancelAll();
-            sampleCache.Clear();
+            ClearCache();
             ClipDatabase.UnregisterClips();
 
             if (ReferenceEquals(Singleton, this))
@@ -114,6 +121,32 @@ namespace CassieReplacement.Reader
                 Singleton = null;
             }
         }
+
+        private static float GetStepSeconds(CassieStep step)
+        {
+            if (step.Kind == StepKind.Yield)
+            {
+                return step.Seconds;
+            }
+
+            if (step.Clip == null)
+            {
+                return CassieTokens.EstimateWordSeconds(step.Name, step.Pitch);
+            }
+
+            float length = step.Clip.Length / step.Pitch;
+            return IsJammed(step)
+                ? (length * step.JamDelay * PercentToFraction) + (step.JamAmount * JamRepeatSeconds)
+                : length;
+        }
+
+        private static float GetReverbSeconds(CassieMessage message)
+        {
+            CassieStep last = message.Steps[message.Steps.Count - 1];
+            return last.Kind == StepKind.Word && last.Clip != null ? last.Clip.Reverb / last.Pitch : 0f;
+        }
+
+        private static bool IsJammed(CassieStep step) => step.JamDelay > 0 && step.JamDelay < JamMaxPercent;
 
         private IEnumerator<float> RunQueue()
         {
@@ -134,7 +167,6 @@ namespace CassieReplacement.Reader
                 yield return Timing.WaitForSeconds(message.LeadInSeconds);
             }
 
-            // Dekodowanie ogg trwa w tle - main thread nie robi już I/O w PlayWord.
             while (!message.Prepared.IsCompleted)
             {
                 yield return Timing.WaitForOneFrame;
@@ -142,48 +174,32 @@ namespace CassieReplacement.Reader
 
             foreach (CassieStep step in message.Steps)
             {
-                if (step.Kind == StepKind.Yield)
+                if (step.Kind == StepKind.Word && step.Clip != null)
                 {
-                    yield return Timing.WaitForSeconds(step.Seconds);
-                    continue;
-                }
-
-                if (step.Clip == null)
-                {
-                    yield return Timing.WaitForSeconds(CassieTokens.EstimateWordSeconds(step.Name, step.Pitch));
-                    continue;
-                }
-
-                float length = step.Clip.Length / step.Pitch;
-                PlayWord(step);
-
-                if (step.JamDelay > 0 && step.JamDelay < JamMaxPercent)
-                {
-                    yield return Timing.WaitForSeconds(length * step.JamDelay * PercentToFraction);
+                    PlayWord(step);
+                    yield return Timing.WaitForSeconds(step.Clip.Length / step.Pitch * (IsJammed(step) ? step.JamDelay * PercentToFraction : 1f));
                     speakers.StopAll();
 
-                    for (int i = 0; i < step.JamAmount; i++)
+                    if (IsJammed(step))
                     {
-                        PlayWord(step);
-                        yield return Timing.WaitForSeconds(JamRepeatSeconds);
-                        speakers.StopAll();
+                        for (int i = 0; i < step.JamAmount; i++)
+                        {
+                            PlayWord(step);
+                            yield return Timing.WaitForSeconds(JamRepeatSeconds);
+                            speakers.StopAll();
+                        }
                     }
                 }
                 else
                 {
-                    yield return Timing.WaitForSeconds(length);
-                    speakers.StopAll();
+                    yield return Timing.WaitForSeconds(GetStepSeconds(step));
                 }
             }
 
-            CassieStep last = message.Steps[message.Steps.Count - 1];
-            if (last.Kind == StepKind.Word && last.Clip != null && last.Clip.Reverb > 0f)
-            {
-                yield return Timing.WaitForSeconds(last.Clip.Reverb / last.Pitch);
-            }
+            yield return Timing.WaitForSeconds(GetReverbSeconds(message));
         }
 
-        private void PlayWord(in CassieStep step)
+        private void PlayWord(CassieStep step)
         {
             SampleData data = GetOrDecode(step.Clip, step.Pitch);
             if (data.Samples == null)
@@ -212,17 +228,18 @@ namespace CassieReplacement.Reader
             }
         }
 
+        // Decoding is done on the thread pool ahead of playback. It only touches NVorbis and managed memory, never the Unity or game API.
         private Task PrepareSamples(CassieMessage message)
         {
             int databaseVersion = ClipDatabase.Version;
             if (databaseVersion != cachedDatabaseVersion)
             {
-                sampleCache.Clear();
+                ClearCache();
                 cachedDatabaseVersion = databaseVersion;
             }
 
-            List<Task> tasks = null;
-            HashSet<SampleKey> scheduled = null;
+            List<Task> tasks = new List<Task>();
+            HashSet<SampleKey> scheduled = new HashSet<SampleKey>();
 
             foreach (CassieStep step in message.Steps)
             {
@@ -232,25 +249,17 @@ namespace CassieReplacement.Reader
                 }
 
                 SampleKey key = new SampleKey(step.Clip.Name, step.Pitch);
-                if (sampleCache.ContainsKey(key))
+                if (sampleCache.ContainsKey(key) || !scheduled.Add(key))
                 {
                     continue;
                 }
 
-                scheduled ??= new HashSet<SampleKey>();
-                if (!scheduled.Add(key))
-                {
-                    continue;
-                }
-
-                // THREAD SAFETY: w tle działa wyłącznie czysto zarządzane dekodowanie (NVorbis) bez API Unity/SCP:SL.
                 CassieClip clip = step.Clip;
                 float pitch = step.Pitch;
-                tasks ??= new List<Task>();
                 tasks.Add(Task.Run(() => GetOrDecode(clip, pitch)));
             }
 
-            return tasks == null ? Task.CompletedTask : Task.WhenAll(tasks);
+            return Task.WhenAll(tasks);
         }
 
         private SampleData GetOrDecode(CassieClip clip, float pitch)
@@ -268,68 +277,91 @@ namespace CassieReplacement.Reader
             }
             catch (Exception ex)
             {
-                // Bez logowania z wątku tła - błąd trafia do SampleData i jest logowany na main threadzie w PlayWord.
                 data = SampleData.Failure(ex.Message);
             }
 
-            if (sampleCache.Count >= MaxCachedClips)
+            Store(key, data);
+            return data;
+        }
+
+        // The cache holds decoded audio, so it is bounded by memory rather than by entry count. Anything that does not fit is decoded again on demand.
+        private void Store(SampleKey key, SampleData data)
+        {
+            long budget = Math.Max(1, Config.MaxCacheMegabytes) * BytesPerMegabyte;
+
+            lock (cacheLock)
+            {
+                if (data.SizeBytes > budget)
+                {
+                    return;
+                }
+
+                if (cachedBytes + data.SizeBytes > budget)
+                {
+                    ClearCache();
+                }
+
+                if (sampleCache.TryAdd(key, data))
+                {
+                    cachedBytes += data.SizeBytes;
+                }
+            }
+        }
+
+        private void ClearCache()
+        {
+            lock (cacheLock)
             {
                 sampleCache.Clear();
+                cachedBytes = 0;
             }
-
-            sampleCache[key] = data;
-            return data;
         }
 
         private static SampleData Decode(CassieClip clip, float pitch)
         {
-            using VorbisReader reader = new VorbisReader(clip.FileInfo.FullName);
-
-            int sampleRate = reader.SampleRate > 0 ? reader.SampleRate : DefaultSampleRate;
-            int channels = reader.Channels > 0 ? reader.Channels : 1;
-            long total = reader.TotalSamples * channels;
-            if (total <= 0 || total > int.MaxValue)
+            using (VorbisReader reader = new VorbisReader(clip.FileInfo.FullName))
             {
-                return SampleData.Failure($"unsupported sample count ({total})");
-            }
-
-            float[] samples = new float[total];
-            int filled = 0;
-            while (filled < samples.Length)
-            {
-                // FIX: ReadSamples może zwrócić mniej niż zażądano - poprzednio jedno wywołanie zostawiało ciszę na końcu.
-                int read = reader.ReadSamples(samples, filled, samples.Length - filled);
-                if (read <= 0)
+                int sampleRate = reader.SampleRate > 0 ? reader.SampleRate : DefaultSampleRate;
+                int channels = reader.Channels > 0 ? reader.Channels : 1;
+                long total = reader.TotalSamples * channels;
+                if (total <= 0 || total > int.MaxValue)
                 {
-                    break;
+                    return SampleData.Failure($"unsupported sample count ({total})");
                 }
 
-                filled += read;
-            }
+                float[] samples = new float[total];
+                int filled = 0;
+                while (filled < samples.Length)
+                {
+                    int read = reader.ReadSamples(samples, filled, samples.Length - filled);
+                    if (read <= 0)
+                    {
+                        break;
+                    }
 
-            if (filled == 0)
-            {
-                return SampleData.Failure("no samples decoded");
-            }
+                    filled += read;
+                }
 
-            if (filled < samples.Length)
-            {
-                Array.Resize(ref samples, filled);
-            }
+                if (filled == 0)
+                {
+                    return SampleData.Failure("no samples decoded");
+                }
 
-            if (pitch != 1f)
-            {
-                samples = ChangeSpeed(samples, channels, pitch);
-            }
+                if (filled < samples.Length)
+                {
+                    Array.Resize(ref samples, filled);
+                }
 
-            return new SampleData(samples, sampleRate, channels);
+                if (pitch != 1f)
+                {
+                    samples = ChangeSpeed(samples, channels, pitch);
+                }
+
+                return new SampleData(samples, sampleRate, channels);
+            }
         }
 
-        /// <summary>
-        /// Zmiana tempa/wysokości przez interpolację liniową.
-        /// FIX: interpolacja per KLATKA (kanał po kanale). Poprzednio dla stereo mieszała próbki L i R.
-        /// Również: rate 48000 nie jest już wpisane na sztywno.
-        /// </summary>
+        // Linear interpolation between whole frames, so channels never bleed into each other.
         private static float[] ChangeSpeed(float[] input, int channels, float pitch)
         {
             int inputFrames = input.Length / channels;
@@ -391,6 +423,8 @@ namespace CassieReplacement.Reader
             public int SampleRate { get; }
 
             public int Channels { get; }
+
+            public long SizeBytes => Samples == null ? 0 : (long)Samples.Length * sizeof(float);
 
             public string Error { get; private set; }
 

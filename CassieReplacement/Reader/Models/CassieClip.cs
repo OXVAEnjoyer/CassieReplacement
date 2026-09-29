@@ -11,12 +11,9 @@ namespace CassieReplacement.Reader.Models
             FileInfo = file ?? throw new ArgumentNullException(nameof(file));
             Reverb = reverb;
             ShouldList = shouldList;
-
-            // FIX: prefiks też normalizowany do małych liter (wyszukiwanie klipów jest lowercase - "Sam_" nigdy nie pasowało).
             Name = (prefix ?? string.Empty).ToLowerInvariant()
                    + Path.GetFileNameWithoutExtension(file.Name).ToLowerInvariant().Replace(' ', '_');
 
-            // FIX: using -> uchwyt pliku zwalniany także przy wyjątku (blokada pliku na Windows).
             using (VorbisReader vorbisReader = new VorbisReader(file.FullName))
             {
                 BaseLength = (float)vorbisReader.TotalTime.TotalSeconds;

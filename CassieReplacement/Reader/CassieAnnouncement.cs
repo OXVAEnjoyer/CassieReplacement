@@ -23,7 +23,6 @@ namespace CassieReplacement.Reader
 
         public bool IsNoisy { get; set; } = true;
 
-        // FIX: null-safe (poprzednio NRE przy pustym polu w YAML / new CassieAnnouncement()) + ToLowerInvariant (kultura tureckiego serwera).
         public string Words
         {
             get => words;
@@ -55,8 +54,13 @@ namespace CassieReplacement.Reader
 
         public CassieAnnouncement GenericReplacement()
         {
-            // OPTYMALIZACJA: jedno przejście po ReferenceHub.AllHubs zamiast ~8 zapytań LINQ (ScpsLeft liczone 3x, PlayersLeft 5x).
-            int scps = 0, classD = 0, scientists = 0, foundationForces = 0, chaos = 0, flamingos = 0;
+            int scps = 0;
+            int classD = 0;
+            int scientists = 0;
+            int foundationForces = 0;
+            int chaos = 0;
+            int flamingos = 0;
+
             foreach (ReferenceHub hub in ReferenceHub.AllHubs)
             {
                 if (hub.IsSCP(includeZombies: false))
@@ -66,18 +70,30 @@ namespace CassieReplacement.Reader
 
                 switch (hub.GetTeam())
                 {
-                    case Team.ClassD: classD++; break;
-                    case Team.Scientists: scientists++; break;
-                    case Team.FoundationForces: foundationForces++; break;
-                    case Team.ChaosInsurgency: chaos++; break;
-                    case Team.Flamingos: flamingos++; break;
+                    case Team.ClassD:
+                        classD++;
+                        break;
+                    case Team.Scientists:
+                        scientists++;
+                        break;
+                    case Team.FoundationForces:
+                        foundationForces++;
+                        break;
+                    case Team.ChaosInsurgency:
+                        chaos++;
+                        break;
+                    case Team.Flamingos:
+                        flamingos++;
+                        break;
                 }
             }
 
             CassieOverrideConfigs config = OverrideConfig;
-            CassieAnnouncement threatOverview = scps == 0 ? config.ThreatOverviewNoScps : scps == 1 ? config.ThreatOverviewOneScp : config.ThreatOverviewScps;
+            CassieAnnouncement threatOverview = scps == 0
+                ? config.ThreatOverviewNoScps
+                : scps == 1 ? config.ThreatOverviewOneScp : config.ThreatOverviewScps;
 
-            // Kolejność ma znaczenie: {threatoverview} zawiera {scps}.
+            // {threatoverview} contains {scps}, so it has to be replaced first.
             return Replace("{threatoverview}", threatOverview)
                 .Replace("{scps}", scps.ToString())
                 .Replace("{classds}", classD.ToString())
@@ -87,10 +103,8 @@ namespace CassieReplacement.Reader
                 .Replace("{flamingos}", flamingos.ToString());
         }
 
-        /// <param name="isNoisy">Nadpisuje <see cref="IsNoisy"/>. FIX: poprzednio wartość była ODWRACANA (!isNoisy).</param>
         public void Announce(bool? isNoisy = null, bool isSubtitles = true)
         {
-            // FIX: nie mutujemy już 'this' (wywołanie na obiekcie z configu nadpisywało treść w konfiguracji).
             CassieAnnouncement processed = GenericReplacement();
             if (string.IsNullOrWhiteSpace(processed.Words))
             {
