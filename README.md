@@ -10,7 +10,7 @@ Swap (or extend) the usual facility announcements with your own `.ogg` clips —
 | **API** | **LabAPI** (recommended) |
 | **EXILED** | WIP — not for live servers yet |
 | **Audio** | [SecretLabNAudio](https://github.com/Axwabo/SecretLabNAudio) by Axwabo |
-| **Original** | [icedchai](https://github.com/icedchai) (`icedchqi`) — this is a fork/port of their plugin |
+| **Original** | [icedchai](https://github.com/icedchai) (`icedchqi`) — this is a fork/port of his plugin |
 
 https://github.com/user-attachments/assets/c17a9dd9-2635-4f65-a49f-ed715d85db1c
 
