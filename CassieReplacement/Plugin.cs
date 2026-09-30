@@ -31,7 +31,7 @@ namespace CassieReplacement
 
         public override string Author => "icedchqi";
 
-        public override Version Version { get; } = new Version(1, 9, 0);
+        public override Version Version { get; } = new Version(1, 10, 0);
 
         public override Version RequiredApiVersion { get; } = new Version(LabApiProperties.CompiledVersion);
 

@@ -26,7 +26,7 @@ namespace CassieReplacement.Config
         [Description("The prefix to use when writing CASSIE messages to allow CASSIE replacer to take over.")]
         public string CustomCassiePrefix { get; set; } = "customcassie";
 
-        [Description("Folders with .ogg clips. Default is LabAPI/configs/CASSIE Replacement. Use {labapi_configs} for the LabAPI configs root, or an absolute path.")]
+        [Description("Folders with audio clips (any format SecretLabNAudio can read). Default is LabAPI/configs/CASSIE Replacement. Use {labapi_configs} for the LabAPI configs root, or an absolute path.")]
         public List<CassieDirectorySerializable> BaseDirectories { get; set; } = new List<CassieDirectorySerializable>
         {
             new CassieDirectorySerializable(),

@@ -11,26 +11,13 @@
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
     <NoWarn>$(NoWarn);NU1902</NoWarn>
-    <OutputPath>..\..\..\output\CassieReplacement\</OutputPath>
     <Optimize>true</Optimize>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="SecretLabNAudio.Core" Version="2.1.2">
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </PackageReference>
-    <PackageReference Include="NAudio.Core" Version="2.2.1">
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </PackageReference>
-    <PackageReference Include="NVorbis" Version="0.10.5" />
-    <PackageReference Include="Fody" Version="6.8.2" PrivateAssets="all" />
-    <PackageReference Include="Costura.Fody" Version="5.7.0" PrivateAssets="all" />
-    <PackageReference Include="Lib.Harmony" Version="2.3.3">
-      <PrivateAssets>all</PrivateAssets>
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </PackageReference>
-    <PackageReference Include="Northwood.LabAPI" Version="1.1.7">
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </PackageReference>
+    <PackageReference Include="SecretLabNAudio.Core" Version="2.1.2" />
+    <PackageReference Include="NAudio.Core" Version="2.2.1" />
+    <PackageReference Include="Lib.Harmony" Version="2.3.3" />
+    <PackageReference Include="Northwood.LabAPI" Version="1.1.7" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="All" />
   </ItemGroup>
   <ItemGroup>
@@ -67,17 +54,4 @@
       <Private>false</Private>
     </Reference>
   </ItemGroup>
-  <Target Name="CleanupEmbeddedDeps" AfterTargets="Build">
-    <ItemGroup>
-      <_EmbeddedLoose Include="$(OutputPath)NVorbis.dll" />
-      <_EmbeddedLoose Include="$(OutputPath)System.Buffers.dll" />
-      <_EmbeddedLoose Include="$(OutputPath)System.Memory.dll" />
-      <_EmbeddedLoose Include="$(OutputPath)System.Numerics.Vectors.dll" />
-      <_EmbeddedLoose Include="$(OutputPath)System.Runtime.CompilerServices.Unsafe.dll" />
-      <_EmbeddedLoose Include="$(OutputPath)System.ValueTuple.dll" />
-      <_EmbeddedLoose Include="$(OutputPath)System.Diagnostics.DiagnosticSource.dll" />
-      <_EmbeddedLoose Include="$(OutputPath)0Harmony.dll" />
-    </ItemGroup>
-    <Delete Files="@(_EmbeddedLoose)" TreatErrorsAsWarnings="true" />
-  </Target>
 </Project>

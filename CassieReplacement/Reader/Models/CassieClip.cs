@@ -2,7 +2,8 @@ namespace CassieReplacement.Reader.Models
 {
     using System;
     using System.IO;
-    using NVorbis;
+    using NAudio.Wave;
+    using SecretLabNAudio.Core.FileReading;
 
     public sealed class CassieClip
     {
@@ -14,9 +15,9 @@ namespace CassieReplacement.Reader.Models
             Name = (prefix ?? string.Empty).ToLowerInvariant()
                    + Path.GetFileNameWithoutExtension(file.Name).ToLowerInvariant().Replace(' ', '_');
 
-            using (VorbisReader vorbisReader = new VorbisReader(file.FullName))
+            using (WaveStream stream = CreateAudioReader.Stream(file.FullName))
             {
-                BaseLength = (float)vorbisReader.TotalTime.TotalSeconds;
+                BaseLength = (float)stream.TotalTime.TotalSeconds;
             }
         }
 

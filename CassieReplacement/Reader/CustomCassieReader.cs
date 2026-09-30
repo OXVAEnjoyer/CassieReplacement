@@ -10,9 +10,13 @@ namespace CassieReplacement.Reader
     using CassieReplacement.Reader.Models;
     using LabApi.Features.Console;
     using MEC;
-    using NVorbis;
+    using NAudio.Wave;
     using SecretLabNAudio.Core;
     using SecretLabNAudio.Core.Extensions;
+    using SecretLabNAudio.Core.Extensions.Processors;
+    using SecretLabNAudio.Core.FileReading;
+    using SecretLabNAudio.Core.Processors;
+    using SecretLabNAudio.Core.Providers;
 
     public sealed class CustomCassieReader : IDisposable
     {
@@ -21,7 +25,7 @@ namespace CassieReplacement.Reader
         private const float JamRepeatSeconds = 0.13f;
         private const int JamMaxPercent = 100;
         private const float PercentToFraction = 0.01f;
-        private const int DefaultSampleRate = 48000;
+        private const int ReadChunkSamples = 16384;
         private const long BytesPerMegabyte = 1024L * 1024L;
 
         private readonly Plugin plugin;
@@ -221,7 +225,7 @@ namespace CassieReplacement.Reader
                     ? volume * Config.GlobalSpeakerVolumeMultiplier
                     : volume;
 
-                audioPlayer.WithUnmanagedProvider(new FloatArraySampleProvider(data.Samples, data.SampleRate, data.Channels))
+                audioPlayer.WithUnmanagedProvider(new RawSourceSampleProvider(data.Samples, data.SampleRate, data.Channels))
                     .WithMasterAmplification(playerVolume);
             }
         }
@@ -315,46 +319,55 @@ namespace CassieReplacement.Reader
 
         private static SampleData Decode(CassieClip clip, float pitch)
         {
-            using (VorbisReader reader = new VorbisReader(clip.FileInfo.FullName))
+            if (!TryCreateAudioReader.StreamAndProvider(clip.FileInfo.FullName, out WaveStream stream, out ISampleProvider provider))
             {
-                int sampleRate = reader.SampleRate > 0 ? reader.SampleRate : DefaultSampleRate;
-                int channels = reader.Channels > 0 ? reader.Channels : 1;
-                long total = reader.TotalSamples * channels;
-                if (total <= 0 || total > int.MaxValue)
-                {
-                    return SampleData.Failure($"unsupported sample count ({total})");
-                }
+                return SampleData.Failure("unsupported audio format");
+            }
 
-                float[] samples = new float[total];
-                int filled = 0;
-                while (filled < samples.Length)
-                {
-                    int read = reader.ReadSamples(samples, filled, samples.Length - filled);
-                    if (read <= 0)
-                    {
-                        break;
-                    }
+            using (stream)
+            using (ProcessorChain chain = new ProcessorChain(provider, false).ToPlayerCompatible())
+            {
+                WaveFormat format = chain.WaveFormat;
+                int expectedSamples = (int)(stream.TotalTime.TotalSeconds * format.SampleRate * format.Channels);
+                float[] samples = ReadToEnd(chain, expectedSamples);
 
-                    filled += read;
-                }
-
-                if (filled == 0)
+                if (samples.Length == 0)
                 {
                     return SampleData.Failure("no samples decoded");
                 }
 
-                if (filled < samples.Length)
-                {
-                    Array.Resize(ref samples, filled);
-                }
-
                 if (pitch != 1f)
                 {
-                    samples = ChangeSpeed(samples, channels, pitch);
+                    samples = ChangeSpeed(samples, format.Channels, pitch);
                 }
 
-                return new SampleData(samples, sampleRate, channels);
+                return new SampleData(samples, format.SampleRate, format.Channels);
             }
+        }
+
+        private static float[] ReadToEnd(ISampleProvider source, int expectedSamples)
+        {
+            float[] buffer = new float[Math.Max(expectedSamples, ReadChunkSamples)];
+            int filled = 0;
+
+            while (true)
+            {
+                if (filled == buffer.Length)
+                {
+                    Array.Resize(ref buffer, buffer.Length * 2);
+                }
+
+                int read = source.Read(buffer, filled, buffer.Length - filled);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                filled += read;
+            }
+
+            Array.Resize(ref buffer, filled);
+            return buffer;
         }
 
         private static float[] ChangeSpeed(float[] input, int channels, float pitch)

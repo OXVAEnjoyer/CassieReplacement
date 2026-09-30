@@ -7,6 +7,7 @@ namespace CassieReplacement.Reader
     using System.Threading.Tasks;
     using CassieReplacement.Reader.Models;
     using LabApi.Features.Console;
+    using SecretLabNAudio.Core.FileReading;
 
     public sealed class ClipDatabase
     {
@@ -104,8 +105,13 @@ namespace CassieReplacement.Reader
                 Scan(child, configuration, output);
             }
 
-            foreach (FileInfo file in directory.EnumerateFiles("*.ogg"))
+            foreach (FileInfo file in directory.EnumerateFiles())
             {
+                if (!AudioReaderFactoryManager.IsReadable(file.FullName))
+                {
+                    continue;
+                }
+
                 try
                 {
                     output.Add(new CassieClip(file, configuration.BleedTime, configuration.Prefix, configuration.ShouldList));

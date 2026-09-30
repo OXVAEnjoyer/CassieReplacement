@@ -70,7 +70,10 @@ namespace CassieReplacement.Audio
             {
                 try
                 {
-                    player?.WithoutProvider();
+                    if (player != null)
+                    {
+                        player.WithoutProvider();
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -85,7 +88,10 @@ namespace CassieReplacement.Audio
             {
                 try
                 {
-                    player?.Destroy();
+                    if (player != null)
+                    {
+                        player.Destroy();
+                    }
                 }
                 catch (Exception ex)
                 {
